@@ -1,35 +1,32 @@
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-
-import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-from keras.utils import plot_model
 
 import tensorflow_addons as tfa
 
-from building_blocks import downsample, upsample, residual_block, ReflectionPadding3D
+from building_blocks import downsample, deconv, upsample, residual_block, ReflectionPadding3D
 
 def get_resnet_generator(
     input_img_size=(64,64,512,1),
+    batch_size=None,
     filters=32,
     num_downsampling_blocks=2,
-    num_residual_blocks=9,
+    num_residual_blocks=6,
     num_upsample_blocks=2,
-    gamma_initializer=None,
-    kernel_initializer=None,
+    gamma_initializer='he_normal',
+    kernel_initializer='he_normal',
     name=None,
 ):
-    img_input = layers.Input(shape=input_img_size, name=name + "_img_input")
-    # x = ReflectionPadding3D(padding=(3, 3, 3))(img_input)
-    x = tf.keras.layers.ZeroPadding3D(padding=1)(img_input)
-    #  CHANGE!
-    for i in range(0,1):
+    
+    ''' SWITCH 'SAME' PADDING TO REFLECTION PADDING? '''
+    img_input = layers.Input(shape=input_img_size, batch_size=batch_size, name=name + "_img_input")
+    x = ReflectionPadding3D(padding=(1, 1, 1))(img_input)
+
+    for _ in range(1):
         x = layers.Conv3D(filters, (7, 7, 7), kernel_initializer=kernel_initializer,
                           use_bias=False)(x)
         x = tfa.layers.InstanceNormalization(gamma_initializer=gamma_initializer)(x)
         x = layers.Activation("relu")(x)
+        x = layers.SpatialDropout3D(0.5)(x)
 
     # Downsampling
     for _ in range(num_downsampling_blocks):
@@ -52,13 +49,13 @@ def get_resnet_generator(
                      gamma_initializer=gamma_initializer)
 
     # Final block
-    # x = ReflectionPadding3D(padding=(3, 3, 3))(x)
-    x = tf.keras.layers.ZeroPadding3D(padding=2)(x)
+    if num_downsampling_blocks == 2:
+        x = ReflectionPadding3D(padding=(2, 2, 2))(x)
     x = layers.Conv3D(1, (7, 7, 7), padding="same")(x)
-    x = layers.Activation("sigmoid")(x)
+    x = layers.Activation("tanh")(x)
 
     model = keras.models.Model(img_input, x, name=name)
-    # plot_model(model, to_file='resnet_generator.png', show_shapes=True)
+
     model.summary()
     return model
 
