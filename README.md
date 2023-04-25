@@ -1,7 +1,7 @@
 # VAN-GAN: Vessel Segmentation Generative Adversarial Network
 
 ## Introduction
-Innovations in imaging hardware have led to a revolution in our ability to visualise vascular networks in 3D at high resolution. The segmentation of microvascular networks from these 3D image volumes and interpretation of their meaning in the context of physiological and pathological processes unfortunately remains a time consuming and error-prone task. Deep learning has the potential to solve this problem, but current supervised analysis frameworks require human-annotated ground truth labels. To overcome these limitations, we present an unsupervised image-to-image translation deep learning model called the *vessel segmentation generative adversarial network* (VAN-GAN). VAN-GAN integrates synthetic blood vessel networks that closely resemble real-life anatomy into its training process and learns to replicate the underlying physics of an imaging system in order to learn how to segment vasculature from 3D biomedical images. By leveraging synthetic data to reduce the reliance on manual labelling, VAN-GAN lower the barriers to entry for high-quality blood vessel segmentation to benefit imaging studies of vascular structure and function.
+Innovations in imaging hardware have led to a revolution in our ability to visualise vascular networks in 3D at high resolution. The segmentation of microvascular networks from these 3D image volumes and interpretation of their meaning in the context of physiological and pathological processes unfortunately remains a time consuming and error-prone task. Deep learning has the potential to solve this problem, but current supervised analysis frameworks require human-annotated ground truth labels. To overcome these limitations, we present an unsupervised image-to-image translation deep learning model called the ***Vessel Segmentation Generative Adversarial Network (VAN-GAN)***. VAN-GAN integrates synthetic blood vessel networks that closely resemble real-life anatomy into its training process and learns to replicate the underlying physics of an imaging system in order to learn how to segment vasculature from 3D biomedical images. By leveraging synthetic data to reduce the reliance on manual labelling, VAN-GAN lower the barriers to entry for high-quality blood vessel segmentation to benefit imaging studies of vascular structure and function.
 
 ## Methodology
 This Python package utilises image-to-image translation to segment 3D biomedical image volumes of vascular networks. Our unsupervised deep learning framework builds upon [CycleGAN](https://arxiv.org/abs/1703.10593) in several ways:
@@ -19,14 +19,23 @@ To install the package from source, download the latest release on the VAN-GAN r
 git clone https://github.com/psweens/VAN-GAN.git
 ```
 
-The required packages can be install using _pip_ in a terminal window:
-```bash
-pip install 
-```
-This command can be run in a [_conda_](https://www.anaconda.com/download/) environment.
+Please ensure that cudatoolkit, cudnn and Tensorflow are correctly installed as per their installation instructions [here](https://www.tensorflow.org/install/pip).
 
-VAN-GAN has been tested on Ubuntu 22.04.2 LTS with the following package versions:
-* Tensorflow
+Tensorflow and the remaining Python packages below can be installed in a [_conda_](https://www.anaconda.com/download/) environment.
+
+The remaining required Python packages can be install using _pip_ in a terminal window:
+```bash
+pip install opencv-python scikit-image tqdm tensorflow_addons tensorflow-mri joblib
+```
+
+VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the following package versions:
+* [Tensorflow 2.10.1](https://www.tensorflow.org)
+* Opencv-python 4.7.0.72
+* Scikit-image 0.20.0
+* [tqdm 4.65.0](https://github.com/tqdm/tqdm)
+* [Tensorflow-addons 0.20.0](https://www.tensorflow.org/addons)
+* [Tensorflow-mri 0.22.0](https://github.com/mrphys/tensorflow-mri)
+* Joblib 1.2.0
 
 ## Code Contributors
 VAN-GAN code was originally developed by [Paul W. Sweeney](www.psweeney.co.uk) who continues to actively develop the framework. VAN-GAN is an open-source tool and so would benefit from suggestions and edits by all and so community development and involvement is welcomed.
