@@ -29,6 +29,8 @@ pip install opencv-python scikit-image tqdm tensorflow_addons tensorflow-mri job
 ```
 
 VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the following package versions:
+* Cuda 12.0
+* Cudnn 8.9.0
 * [Tensorflow 2.10.1](https://www.tensorflow.org)
 * Opencv-python 4.7.0.72
 * Scikit-image 0.20.0
