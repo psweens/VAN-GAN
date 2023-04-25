@@ -25,12 +25,12 @@ Tensorflow and the remaining Python packages below can be installed in a [_conda
 
 The remaining required Python packages can be install using _pip_ in a terminal window:
 ```bash
-pip install opencv-python scikit-image tqdm tensorflow_addons tensorflow-mri joblib
+pip install opencv-python scikit-image tqdm tensorflow_addons tensorflow-mri joblib matplotlib
 ```
 
 VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the following package versions:
-* Cuda 12.0
-* Cudnn 8.9.0
+* Cuda 11.2.2
+* Cudnn 8.1.0.77
 * [Tensorflow 2.10.1](https://www.tensorflow.org)
 * Opencv-python 4.7.0.72
 * Scikit-image 0.20.0
@@ -38,6 +38,7 @@ VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the followi
 * [Tensorflow-addons 0.20.0](https://www.tensorflow.org/addons)
 * [Tensorflow-mri 0.22.0](https://github.com/mrphys/tensorflow-mri)
 * Joblib 1.2.0
+* Matplotlib 3.7.1
 
 ## Code Contributors
 VAN-GAN code was originally developed by [Paul W. Sweeney](www.psweeney.co.uk) who continues to actively develop the framework. VAN-GAN is an open-source tool and so would benefit from suggestions and edits by all and so community development and involvement is welcomed.
