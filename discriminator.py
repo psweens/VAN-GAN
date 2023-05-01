@@ -22,11 +22,9 @@ def get_discriminator(
     img_input = layers.Input(
         shape=input_img_size, batch_size=batch_size, name=name + "_img_input"
     )
+    x = ReflectionPadding3D()(img_input)
     if use_input_noise:
-        x = ReflectionPadding3D()(img_input)
         x = layers.GaussianNoise(noise_std)(x)
-    else:
-        x = ReflectionPadding3D()(img_input)
         
 
     if use_SN:
@@ -45,8 +43,7 @@ def get_discriminator(
             padding="valid",
             kernel_initializer=kernel_initializer,
         )(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        # x = tfa.layers.InstanceNormalization(gamma_initializer=None)(x)
+        x = tfa.layers.InstanceNormalization(gamma_initializer=None)(x)
     
     x = layers.LeakyReLU(0.2)(x)
 
@@ -99,3 +96,4 @@ def get_discriminator(
 
     model.summary()
     return model
+

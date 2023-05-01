@@ -1,5 +1,3 @@
-'''https://github.com/karolzak/keras-unet'''
-
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     BatchNormalization,
@@ -18,7 +16,9 @@ from tensorflow.keras.layers import (
 import tensorflow_addons as tfa
 import tensorflow as tf
 from building_blocks import ReflectionPadding3D
-from loss_functions import rescaleTensor, normaliseTF
+from utils import min_max_norm_tf, rescale_arr_tf
+
+'''https://github.com/karolzak/keras-unet'''
 
 def attention_gate(inp_1, inp_2, n_intermediate_filters):
     '''Attention gate. Compresses both inputs to n_intermediate_filters filters before processing.
@@ -136,29 +136,17 @@ def custom_vnet(
 
     Arguments:
     input_shape: 4D Tensor of shape (x, y, z, num_channels)
-
     num_classes (int): Unique classes in the output mask. Should be set to 1 for binary segmentation
-
     activation (str): A keras.activations.Activation to use. ReLu by default.
-
     use_batch_norm (bool): Whether to use Batch Normalisation across the channel axis between convolutional layers
-
     upsample_mode (one of 'deconv' or 'simple'): Whether to use transposed convolutions or simple upsampling in the decoder part
-
     dropout (float between 0. and 1.): Amount of dropout after the initial convolutional block. Set to 0. to turn Dropout off
-
     dropout_change_per_layer (float between 0. and 1.): Factor to add to the Dropout after each convolutional block
-
     dropout_type (one of 'spatial' or 'standard'): Type of Dropout to apply. Spatial is recommended for CNNs [2]
-
     use_dropout_on_upsampling (bool): Whether to use dropout in the decoder part of the network
-
     use_attention_gate (bool): Whether to use an attention dynamic when concatenating with the skip-connection, implemented as proposed by Oktay et al. [3]
-
     filters (int): Convolutional filters in the initial convolutional block. Will be doubled every block
-
     num_layers (int): Number of total layers in the encoder not including the bottleneck layer
-
     output_activation (str): A keras.activations.Activation to use. Sigmoid by default for binary segmentation
 
     Returns:
@@ -179,12 +167,12 @@ def custom_vnet(
     x = inputs
     
     if addnoise:
-        x = normaliseTF(x) + tf.random.normal(shape=tf.shape(x),
+        x = min_max_norm_tf(x) + tf.random.normal(shape=tf.shape(x),
                                             mean=-0.475,
                                             stddev=0.06)
         x = tf.math.add(x, inputs)
         x = tf.clip_by_value(x, 0., 1.)
-        x = rescaleTensor(x, -0.5, 0.5)
+        x = rescale_arr_tf(x, -0.5, 0.5)
 
     down_layers = []
     for l in range(num_layers):
