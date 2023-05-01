@@ -33,6 +33,12 @@ class GAN_Monitor():
         self.model_path = self.model_path[0]
         
     def saveModel(self, model, epoch):
+        """Save the trained model at the given epoch.
+
+        Args:
+            model (object): The VANGAN model object.
+            epoch (int): The epoch number.
+        """
         
         # if epoch > 100:
         model.gen_AB.save(os.path.join(self.model_path, "checkpoints/e{epoch}_genAB".format(epoch=epoch+1)))
@@ -43,7 +49,29 @@ class GAN_Monitor():
     def stitch_subvolumes(self, gen, img, subvol_size, 
                           epoch=-1, stride=(25,25,128),
                          name=None, output_path=None, complete=False, padFactor=0.25, border_removal=True, process_img=False):
+        """
+        Stitch together subvolumes to create a full volume prediction.
 
+        Args:
+            gen: A VANGAN generator model used for prediction.
+            img: numpy.ndarray, Image data used for prediction.
+            subvol_size: tuple, Size of subvolumes used for prediction.
+            epoch: int, Epoch number for saving output prediction.
+            stride: tuple, Size of strides used for overlapping subvolumes.
+            name: str, Name of output prediction file.
+            output_path: str, Path for saving output prediction.
+            complete: bool, If True padding is applied to edges to account for border effects.
+            padFactor: float, Padding factor used for edge padding.
+            border_removal: bool, If True remove border pixels from output prediction.
+            process_img: bool, If True the input image is passed through the `process_imaging_domain` function.
+                         If self.process_imaging_domain is not defined, this step is skipped.
+
+        Returns:
+            pred: numpy.ndarray, Full volume prediction stitched from subvolumes.
+
+        Raises:
+            AssertionError: If the dimensions of subvol_size and img do not match.
+        """
         if self.dims == 2:
             subvol_size = list(subvol_size)
             subvol_size[3] = 1
@@ -193,6 +221,23 @@ class GAN_Monitor():
                                       bigtiff=False, check_contrast=False)
         
     def imagePlotter(self, epoch, filename, setlist, dataset, genX, genY, nfig=6, outputFull=True, process_img=False):
+        """
+        Plot and save 2D sample images during training.
+
+        Parameters:
+        epoch (int): The current epoch number.
+        filename (str): The filename to save the plot as.
+        setlist (list): A list of filenames for samples to be plotted.
+        dataset (tf.data.Dataset): The dataset containing the samples.
+        genX (tf.keras.Model): The generator model.
+        genY (tf.keras.Model): The inverse generator model.
+        nfig (int): The number of sample images to plot.
+        outputFull (bool): If True, generate and save 3D predictions.
+        process_img (bool): If True and self.process_imaging_domain is not None, process the images before plotting.
+
+        Returns:
+        None
+        """
 
         # Extract test array and filename
         sample = list(dataset.take(1))
@@ -271,6 +316,20 @@ class GAN_Monitor():
                                   self.imgSize, epoch=epoch, name=sampleName, process_img=process_img)
                 
     def set_learning_rate(self, model, epoch, args):
+        """
+        Sets the learning rate for each optimizer based on the current epoch.
+
+        Parameters:
+            model: VANGAN object
+                An instance of the VANGAN class.
+            epoch: int
+                The current epoch number.
+            args: argparse.Namespace
+                An argparse namespace containing the command line arguments.
+
+        Returns:
+            None
+        """
         
         if epoch == args.INITIATE_LR_DECAY:
             
@@ -325,6 +384,19 @@ class GAN_Monitor():
             
         
     def updateDiscriminatorNoise(self, model, init_noise, epoch, args):
+        """
+        Update the standard deviation of the Gaussian noise layer in a VANGAN discriminator.
+
+        Args:
+            model (tf.keras.model): The Keras model to update the noise layer for.
+            init_noise (float): The initial standard deviation of the noise layer.
+            epoch (int): The current epoch number.
+            args (argparse.Namespace): The command-line arguments containing the noise decay rate.
+
+        Returns:
+            None
+
+        """
         if args.NO_NOISE == 0:
             decay_rate = 1.
         else:
@@ -340,6 +412,19 @@ class GAN_Monitor():
                     layer.stddev = 0.0                
                 
     def on_epoch_start(self, model, epoch, args, logs=None):
+        """
+        Callback function that is called at the start of each training epoch.
+
+        Args:
+            model (tf.keras.model): The Keras model being trained.
+            epoch (int): The current epoch number.
+            args (argparse.Namespace): The command-line arguments containing the learning rate and noise decay rate.
+            logs (Optional[Dict[str, float]]): Dictionary of logs to update during training. Defaults to None.
+
+        Returns:
+            None
+
+        """
         
         self.set_learning_rate(model, epoch, args)
         
@@ -348,12 +433,41 @@ class GAN_Monitor():
         
 
     def on_epoch_end(self, model, epoch, logs=None):
+        """
+        Callback function that is called at the end of each training epoch.
+
+        Args:
+            model (tf.keras.model): The Keras model being trained.
+            epoch (int): The current epoch number.
+            logs (Optional[Dict[str, float]]): Dictionary of logs to update during training. Defaults to None.
+
+        Returns:
+            None
+
+        """
 
         # Generate 2D plots
         self.imagePlotter(epoch, "genAB", self.Alist, self.test_AB, model.gen_AB, model.gen_BA, process_img=True)
         self.imagePlotter(epoch, "genBA", self.Blist, self.test_BA, model.gen_BA, model.gen_AB, outputFull=True)
         
     def run_mapping(self, model, test_set, sub_img_size=(64,64,512,1), segmentation=True, stride=(25,25,1), padFactor=0.25, filetext=None, filepath=''):
+        """
+        Runs mapping on a set of test images using the specified generator model and sub-volume size.
+
+        Args:
+            model (tf.keras.model): The generator model to use for mapping.
+            test_set (List[str]): A list of file paths to the test images.
+            sub_img_size (Tuple[int, int, int, int]): The size of the sub-volumes to use for mapping. Defaults to (64,64,512,1).
+            segmentation (bool): A flag indicating whether to perform segmentation. Defaults to True.
+            stride (Tuple[int, int, int]): The stride to use when mapping sub-volumes. Defaults to (25,25,1).
+            padFactor (float): The padding factor to use when mapping sub-volumes. Defaults to 0.25.
+            filetext (Optional[str]): A string to append to the output file names. Defaults to None.
+            filepath (str): The output file path. Defaults to ''.
+
+        Returns:
+            None
+
+        """
         
         # num_cores = int(0.8*(multiprocessing.cpu_count() - 1))
         # print('Processing training data ...')
