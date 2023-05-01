@@ -44,7 +44,7 @@ VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the followi
 A paired synthetic 3D image dataset composed of segmentation labels of mathematical-derived 3D vascular networks and corresponding simulated photocoustic images will be made available [here](https://doi.org/10.17863/CAM.96379) at publication. This dataset can be used to performed unsupervised training of VAN-GAN and then validate segmentation predictions using the known ground truth labels.
 
 ## Code Contributors
-VAN-GAN code was originally developed by [Paul W. Sweeney](www.psweeney.co.uk) who continues to actively develop the framework. VAN-GAN is an open-source tool and so would benefit from suggestions and edits by all and so community development and involvement is welcomed.
+VAN-GAN code was originally developed by [Paul W. Sweeney](https://www.psweeney.co.uk) who continues to actively develop the framework. VAN-GAN is an open-source tool and so would benefit from suggestions and edits by all and so community development and involvement is welcomed.
 
 ## References
 If you use this code or data, we kindly ask that you please cite XX. Please check fthe following reference for more details:
