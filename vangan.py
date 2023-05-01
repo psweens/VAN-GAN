@@ -283,25 +283,28 @@ class VanGan():
                             tf.math.negative(tf.ones(tf.shape(arr))))
             
     def computeLosses(self, real_A, real_B, result, training=True):
+        """
+        Computes the losses for the VANGAN model using the given input images and model settings.
+
+        Args:
+            real_A (tf.Tensor): A tensor containing the real images from domain A.
+            real_B (tf.Tensor): A tensor containing the real images from domain B.
+            result (dict): A dictionary to store the loss values.
+            training (bool, optional): A flag indicating whether the model is being trained or not. Defaults to True.
+
+        Returns:
+            tuple: A tuple containing the updated result dictionary and the calculated losses.
+
+        Raises:
+            ValueError: If the `cycle_loss_fn`, `seg_loss_fn`, `perceptual_loss`, `discriminator_loss_fn`,
+            `generator_loss_fn`, `wasserstein_discriminator_loss` or `wasserstein_generator_loss` are not
+            callable functions.
+
+        """
         
         # Can be used to debug dataset numerics
         #tf.debugging.check_numerics(real_A, 'real_A failure')
         #tf.debugging.check_numerics(real_B, 'real_B failure')
-
-        # For CycleGan, we need to calculate different
-        # kinds of losses for the generators and discriminators.
-        # We will perform the following steps here:
-        #
-        # 1. Pass real images through the generators and get the generated images
-        # 2. Pass the generated images back to the generators to check if we
-        #    we can predict the original image from the generated image.
-        # 3. Do an identitB mapping of the real images using the generators.
-        # 4. Pass the generated images in 1) to the corresponding discriminators.
-        # 5. Calculate the generators total loss (adverserial + cycle + identity)
-        # 6. Calculate the discriminators loss
-        # 7. Update the weights of the generators
-        # 8. Update the weights of the discriminators
-        # 9. Return the losses in a dictionary
         
         # A -> B
         fake_B = self.gen_AB(real_A, training=training)
@@ -368,6 +371,17 @@ class VanGan():
         return result, total_loss_A, total_loss_B, disc_A_loss, disc_B_loss, fake_A, fake_B
     
     def gradient_penalty(self, real, fake, descrip='A'):
+        """
+        Computes the gradient penalty for the Wasserstein loss function. 
+
+        Parameters:
+        - real: the real input data (either A or B) with dimensions [batch_size, height, width, channels]
+        - fake: the generated data (either A or B) with dimensions [batch_size, height, width, channels]
+        - descrip: specifies which discriminator to use (either 'A' or 'B')
+
+        Returns:
+        - gp: the computed gradient penalty
+        """
         alpha = tf.random.normal([self.batch_size, 1, 1, 1, 1], 0.0, 1.0)
         diff = fake - real
         interpolated = real + alpha * diff
@@ -381,6 +395,18 @@ class VanGan():
         return gp
     
     def train_step(self, real_A, real_B):
+        """
+        Trains the VANGAN model using a single batch of input images.
+
+        Parameters:
+        - `self`: the VANGAN object.
+        - `real_A`: a batch of images from domain A.
+        - `real_B`: a batch of images from domain B.
+
+        Returns:
+        - `result`: a dictionary containing the losses and metrics computed during training.
+        """
+
         result = {}
         with tf.GradientTape(persistent=True) as tape:  
             result, total_loss_A, total_loss_B, disc_A_loss, disc_B_loss, fake_A, fake_B = self.computeLosses(real_A, real_B, result, training=True)   
@@ -431,28 +457,89 @@ class VanGan():
         return result
     
     def test_step(self, real_A, real_B):
+        """
+        Evaluates the VANGAN model on a single batch of input images.
+
+        Parameters:
+        - `self`: the VANGAN object.
+        - `real_A`: a batch of images from domain A.
+        - `real_B`: a batch of images from domain B.
+
+        Returns:
+        - `result`: a dictionary containing the losses and metrics computed during evaluation.
+        """
+
         result = {}
         result, _, _, _, _, _, _ = self.computeLosses(real_A, real_B, result, training=False)
         return result
     
     def reduce_dict(self, d: dict):
+        """
+        Reduces the values in a dictionary using the current distribution strategy.
+
+        Parameters:
+        - `self`: the VANGAN object.
+        - `d`: a dictionary containing values to be reduced.
+
+        Returns:
+        - None
+        """
+
         ''' reduce items in dictionary d '''
         for k, v in d.items():
           d[k] = self.strategy.reduce(tf.distribute.ReduceOp.SUM, v, axis=None)
     
     @tf.function
     def distributed_train_step(self, x, y):
+        """
+        Runs a training step using the current distribution strategy.
+
+        Parameters:
+        - `self`: the VANGAN object.
+        - `x`: a batch of images from domain A.
+        - `y`: a batch of images from domain B.
+
+        Returns:
+        - `results`: a dictionary containing the losses and metrics computed during training.
+        """
         results = self.strategy.run(self.train_step, args=(x, y))
         self.reduce_dict(results)
         return results
   
     @tf.function
     def distributed_test_step(self, x, y):
+        """
+        Runs a test step using the current distribution strategy.
+
+        Parameters:
+        - `self`: the VANGAN object.
+        - `x`: a batch of images from domain A.
+        - `y`: a batch of images from domain B.
+
+        Returns:
+        - `results`: a dictionary containing the losses and metrics computed during testing.
+        """
         results = self.strategy.run(self.test_step, args=(x, y))
         self.reduce_dict(results)
         return results
 
 def train(args, ds, gan, summary, epoch: int, steps=None, desc=None, training=True):
+    """
+    Runs a training or testing loop for a given number of steps using the specified VANGAN object and dataset.
+
+    Parameters:
+    - `args`: command line arguments.
+    - `ds`: a TensorFlow dataset containing the input data.
+    - `gan`: a VANGAN object representing the model.
+    - `summary`: a TensorFlow summary object for logging.
+    - `epoch`: the current epoch number.
+    - `steps`: the number of steps to run (default is None, meaning run until the end of the dataset).
+    - `desc`: a string to use as the description for the tqdm progress bar (default is None).
+    - `training`: a boolean indicating whether to run in training mode (default is True).
+
+    Returns:
+    - `results`: a dictionary containing the losses and metrics computed during training or testing.
+    """
     results = {}
     cntr = 0        
     for x, y in tqdm(ds, desc=desc, total=steps, disable=0):
