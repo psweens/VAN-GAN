@@ -16,8 +16,24 @@ def get_resnet_generator(
     kernel_initializer='he_normal',
     name=None,
 ):
-    
-    ''' SWITCH 'SAME' PADDING TO REFLECTION PADDING? '''
+    """
+    Returns a 3D ResNet generator model.
+
+    Args:
+        input_img_size (tuple): The size of the input image (height, width, depth, channels).
+        batch_size (int, optional): The batch size to be used for the model. Defaults to None.
+        filters (int, optional): The number of filters in the first convolutional layer. Defaults to 32.
+        num_downsampling_blocks (int, optional): The number of downsampling blocks in the generator. Defaults to 2.
+        num_residual_blocks (int, optional): The number of residual blocks in the generator. Defaults to 6.
+        num_upsample_blocks (int, optional): The number of upsampling blocks in the generator. Defaults to 2.
+        gamma_initializer (str, optional): The initializer to be used for the instance normalization gamma. Defaults to 'he_normal'.
+        kernel_initializer (str, optional): The initializer to be used for the convolutional kernels. Defaults to 'he_normal'.
+        name (str, optional): The name of the model. Defaults to None.
+
+    Returns:
+        tensorflow.keras.models.Model: The 3D ResNet generator model.
+    """    
+
     img_input = layers.Input(shape=input_img_size, batch_size=batch_size, name=name + "_img_input")
     x = ReflectionPadding3D(padding=(1, 1, 1))(img_input)
 
