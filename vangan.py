@@ -4,7 +4,6 @@ import tensorflow as tf
 from tqdm import tqdm
 from generator import get_resnet_generator
 from discriminator import get_discriminator
-from discriminator2D import get_2D_discriminator
 from loss_functions import (generator_loss_fn, 
                             discriminator_loss_fn, 
                             cycle_loss, 
@@ -16,7 +15,6 @@ from loss_functions import (generator_loss_fn,
                             cycle_perceptual)
 from vnet_model import custom_vnet
 from resunet_model import ResUNet
-from resunet_model_2D import TwoDResUNet
 
 class VanGan():
     def __init__(
@@ -108,40 +106,22 @@ class VanGan():
                                 output_activation='tanh',
                                 )
             elif self.genAB_typ == 'resUnet':
-                if self.dims == 2:
-                    self.gen_AB = TwoDResUNet(
-                                    input_shape = self.subvol_patch_size,
-                                    num_classes=1,
-                                    activation='relu',
-                                    use_batch_norm=False,
-                                    upsample_mode='simple', 
-                                    dropout=0.1,
-                                    dropout_change_per_layer=0.1,
-                                    dropout_type='none',
-                                    use_dropout_on_upsampling=False,
-                                    kernel_initializer=self.kernel_init,
-                                    use_attention_gate=False,
-                                    filters=16,
-                                    num_layers=4,
-                                    output_activation='tanh',
-                                    )
-                else:
-                    self.gen_AB = ResUNet(
-                                    input_shape = self.subvol_patch_size,
-                                    num_classes=1,
-                                    activation='relu',
-                                    use_batch_norm=False,
-                                    upsample_mode='simple', 
-                                    dropout=0.1,
-                                    dropout_change_per_layer=0.1,
-                                    dropout_type='none',
-                                    use_dropout_on_upsampling=False,
-                                    kernel_initializer=self.kernel_init,
-                                    use_attention_gate=False,
-                                    filters=16,
-                                    num_layers=4,
-                                    # output_activation=None,
-                                    )
+                self.gen_AB = ResUNet(
+                                input_shape = self.subvol_patch_size,
+                                num_classes=1,
+                                activation='relu',
+                                use_batch_norm=False,
+                                upsample_mode='simple', 
+                                dropout=0.1,
+                                dropout_change_per_layer=0.1,
+                                dropout_type='none',
+                                use_dropout_on_upsampling=False,
+                                kernel_initializer=self.kernel_init,
+                                use_attention_gate=False,
+                                filters=16,
+                                num_layers=4,
+                                # output_activation=None,
+                                )
             else:
                 raise ValueError('AB Generator type not recognised')
                 
@@ -174,101 +154,54 @@ class VanGan():
                                 addnoise=False
                                 )
             elif self.genBA_typ == 'resUnet':
-                if self.dims == 2:
-                    self.gen_BA = TwoDResUNet(
-                                    input_shape = self.seg_subvol_patch_size,
-                                    num_classes=1,
-                                    activation='relu',
-                                    use_batch_norm=False,
-                                    upsample_mode='simple', 
-                                    dropout=0.1,
-                                    dropout_change_per_layer=0.1,
-                                    dropout_type='none',
-                                    use_dropout_on_upsampling=False,
-                                    kernel_initializer=self.kernel_init,
-                                    use_attention_gate=False,
-                                    filters=16,
-                                    num_layers=4,
-                                    output_activation='tanh',
-                                    channels=self.channels
-                                    )
-                else:
-                    self.gen_BA = ResUNet(
-                                    input_shape = self.seg_subvol_patch_size,
-                                    num_classes=1,
-                                    activation='relu',
-                                    use_batch_norm=False,
-                                    upsample_mode='simple', 
-                                    dropout=0.1,
-                                    dropout_change_per_layer=0.1,
-                                    dropout_type='none',
-                                    use_dropout_on_upsampling=False,
-                                    kernel_initializer=self.kernel_init,
-                                    use_attention_gate=False,
-                                    filters=16,
-                                    num_layers=4,
-                                    # output_activation=None,
-                                    use_input_noise=False
-                                    )
+                self.gen_BA = ResUNet(
+                                input_shape = self.seg_subvol_patch_size,
+                                num_classes=1,
+                                activation='relu',
+                                use_batch_norm=False,
+                                upsample_mode='simple', 
+                                dropout=0.1,
+                                dropout_change_per_layer=0.1,
+                                dropout_type='none',
+                                use_dropout_on_upsampling=False,
+                                kernel_initializer=self.kernel_init,
+                                use_attention_gate=False,
+                                filters=16,
+                                num_layers=4,
+                                # output_activation=None,
+                                use_input_noise=False
+                                )
             else:
                 raise ValueError('BA Generator type not recognised')
         
         
             # Get the discriminators
-            if self.dims == 2:
-                self.disc_A = get_2D_discriminator(
-                                    input_img_size=self.subvol_patch_size,
-                                    batch_size=self.global_batch_size,
-                                    kernel_initializer=self.kernel_init,
-                                    name='discriminator_A',
-                                    filters=64,
-                                    use_dropout=False,
-                                    wasserstein=self.wasserstein,
-                                    use_SN=False,
-                                    use_input_noise=True,
-                                    use_layer_noise=True,
-                                    noise_std=self.layer_noise
-                                    )
-                self.disc_B = get_2D_discriminator(
-                                    input_img_size=self.seg_subvol_patch_size,
-                                    batch_size=self.global_batch_size,
-                                    kernel_initializer=self.kernel_init,
-                                    name='discriminator_B',
-                                    filters=64,
-                                    use_dropout=False,
-                                    wasserstein=self.wasserstein,
-                                    use_SN=False,
-                                    use_input_noise=True,
-                                    use_layer_noise=True,
-                                    noise_std=self.layer_noise
-                                    )
-            else:
-                self.disc_A = get_discriminator(
-                                    input_img_size=self.subvol_patch_size,
-                                    batch_size=self.global_batch_size,
-                                    kernel_initializer=self.kernel_init,
-                                    name='discriminator_A',
-                                    filters=64,
-                                    use_dropout=False,
-                                    wasserstein=self.wasserstein,
-                                    use_SN=False,
-                                    use_input_noise=True,
-                                    use_layer_noise=True,
-                                    noise_std=self.layer_noise
-                                    )
-                self.disc_B = get_discriminator(
-                                    input_img_size=self.seg_subvol_patch_size,
-                                    batch_size=self.global_batch_size,
-                                    kernel_initializer=self.kernel_init,
-                                    name='discriminator_B',
-                                    filters=64,
-                                    use_dropout=False,
-                                    wasserstein=self.wasserstein,
-                                    use_SN=False,
-                                    use_input_noise=True,
-                                    use_layer_noise=True,
-                                    noise_std=self.layer_noise
-                                    )
+            self.disc_A = get_discriminator(
+                                input_img_size=self.subvol_patch_size,
+                                batch_size=self.global_batch_size,
+                                kernel_initializer=self.kernel_init,
+                                name='discriminator_A',
+                                filters=64,
+                                use_dropout=False,
+                                wasserstein=self.wasserstein,
+                                use_SN=False,
+                                use_input_noise=True,
+                                use_layer_noise=True,
+                                noise_std=self.layer_noise
+                                )
+            self.disc_B = get_discriminator(
+                                input_img_size=self.seg_subvol_patch_size,
+                                batch_size=self.global_batch_size,
+                                kernel_initializer=self.kernel_init,
+                                name='discriminator_B',
+                                filters=64,
+                                use_dropout=False,
+                                wasserstein=self.wasserstein,
+                                use_SN=False,
+                                use_input_noise=True,
+                                use_layer_noise=True,
+                                noise_std=self.layer_noise
+                                )
             
             
             # Initialise optimizers
