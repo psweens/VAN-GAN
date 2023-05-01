@@ -46,6 +46,8 @@ A paired synthetic 3D image dataset composed of segmentation labels of mathemati
 ## Code Contributors
 VAN-GAN code was originally developed by [Paul W. Sweeney](https://www.psweeney.co.uk) who continues to actively develop the framework. VAN-GAN is an open-source tool and so would benefit from suggestions and edits by all and so community development and involvement is welcomed.
 
+Please get in contact in you have any questions.
+
 ## References
 If you use this code or data, we kindly ask that you please cite XX. Please check fthe following reference for more details:
 > [Segmentation of 3D blood vessel networks using unsupervised deep learning](https://doi.org/10.1101/2023.04.30.538453)<br>
