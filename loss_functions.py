@@ -6,34 +6,102 @@ from clDice_func import soft_dice_cldice_loss
 
 @tf.function
 def reduce_mean(self, inputs, axis=None, keepdims=False):
-    """ return inputs mean with respect to the global_batch_size """
+    """
+    Compute the mean of the inputs tensor along the given axis and divide by the global batch size.
+    
+    Args:
+    - inputs: A tensor of values to compute the mean on.
+    - axis: The dimensions along which to compute the mean. If None (default), compute the mean over all dimensions.
+    - keepdims: If True, retains the reduced dimensions with length 1. If False (default), the reduced dimensions are removed.
+    
+    Returns:
+    - A tensor with the mean of the inputs tensor along the given axis divided by the global batch size.
+    """
     return tf.reduce_mean(inputs, axis=axis, keepdims=keepdims) / self.global_batch_size
 
 @tf.function
 def MSLE(self, real, fake):
-    """ return the per sample mean squared logarithmic error """
+    """
+    Compute the per-sample mean squared logarithmic error (MSLE) between the real and fake tensors.
+    
+    Args:
+    - real: A tensor of real values.
+    - fake: A tensor of fake values.
+    
+    Returns:
+    - A scalar tensor representing the per-sample MSLE between the real and fake tensors.
+    """
     return reduce_mean(self, tf.square(tf.math.log(real + 1.) - tf.math.log(fake + 1.)), axis=list(range(1, len(real.shape))))
 
 @tf.function
 def MAE(self, y_true, y_pred):
-  """ return the per sample mean absolute error """
+    """
+    Compute the per-sample mean absolute error (MAE) between the true and predicted tensors.
+    
+    Args:
+    - y_true: A tensor of true values.
+    - y_pred: A tensor of predicted values.
+    
+    Returns:
+    - A scalar tensor representing the per-sample MAE between the true and predicted tensors.
+    """
   return reduce_mean(self, tf.abs(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
 
 @tf.function
 def MSE(self, y_true, y_pred):
-  """ return the per sample mean squared error """
+    """
+    Compute the per-sample mean squared error (MSE) between the true and predicted tensors.
+    
+    Args:
+    - y_true: A tensor of true values.
+    - y_pred: A tensor of predicted values.
+    
+    Returns:
+    - A scalar tensor representing the per-sample MSE between the true and predicted tensors.
+    """
   return reduce_mean(self, tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
 
 @tf.function
 def L4(self, y_true, y_pred):
+    """
+    Compute the per-sample L4 loss between the true and predicted tensors.
+    
+    Args:
+    - y_true: A tensor of true values.
+    - y_pred: A tensor of predicted values.
+    
+    Returns:
+    - A scalar tensor representing the per-sample L4 loss between the true and predicted tensors.
+    """
     return reduce_mean(self, tf.math.pow(y_true - y_pred, 4), axis=list(range(1, len(y_true.shape))))
 
 @tf.function
 def wasserstein_loss(prob_real_is_real, prob_fake_is_real):
+    """
+    Compute the Wasserstein loss between the probabilities that the real inputs are real and the generated inputs are real.
+    
+    Args:
+    - prob_real_is_real: A tensor representing the probability that the real inputs are real.
+    - prob_fake_is_real: A tensor representing the probability that the generated inputs are real.
+    
+    Returns:
+    - A scalar tensor representing the Wasserstein loss between the two input probability tensors.
+    """
     return tf.reduce_mean(prob_real_is_real - prob_fake_is_real)
 
 @tf.function
 def matched_crop(self, stack, axis=None, rescale=False):
+    """
+    Randomly crop the input tensor `stack` (which is compose of two image stacks) along a specified axis and return the resulting cropped tensors.
+
+    Args:
+    - stack: A tensor to be cropped.
+    - axis: The axis along which to crop the input tensor. If axis=1, the input tensor will be cropped horizontally; if axis=3, it will be cropped vertically. Defaults to None.
+    - rescale: A Boolean value indicating whether to rescale the resulting tensor values between 0 and 1. Defaults to False.
+
+    Returns:
+    - A tuple containing two cropped tensors of the same shape as the input tensor.
+    """
     if axis==1:
         shape = (self.batch_size, 2*self.img_size[1], self.img_size[2], 1, self.channels)
         raxis = 3
@@ -50,6 +118,18 @@ def matched_crop(self, stack, axis=None, rescale=False):
 
 @tf.function
 def cycle_loss(self, real_image, cycled_image, typ=None):
+    """
+    Compute the cycle consistency loss between real and cycled images.
+
+    Args:
+        self (object): The instance of the class.
+        real_image (tensor): The tensor of real images.
+        cycled_image (tensor): The tensor of cycled images.
+        typ (string): The type of loss to compute. It can be set to "mse", "L4", or None (default).
+
+    Returns:
+        tensor: The cycle consistency loss tensor.
+    """
     if typ is None:
         return MAE(self, real_image, cycled_image) * self.lambda_cycle
     elif typ == "mse":
@@ -64,12 +144,32 @@ def cycle_loss(self, real_image, cycled_image, typ=None):
         
 @tf.function
 def cycle_perceptual(self, real_image, cycled_image):
+    """
+    Return the per sample cycle perceptual loss using Structural Similarity Index (SSIM) loss
+
+    Args:
+    - real_image: Tensor, shape (batch_size, H, W, C), representing the real image
+    - cycled_image: Tensor, shape (batch_size, H, W, C), representing the cycled image
+
+    Returns:
+    - loss: float Tensor, representing the per sample cycle perceptual loss
+    """
     real = min_max_norm_tf(real_image)
     cycled = min_max_norm_tf(cycled_image)
     return reduce_mean(self, tfmr.losses.ssim_loss(real, cycled, max_val=1.0)) * self.lambda_identity
         
 @tf.function
 def cycle_seg_loss(self, real_image, cycled_image):
+    """
+    Compute the segmentation loss between the real image and the cycled image
+    
+    Args:
+    - real_image: a tensor of shape (batch_size, image_size, image_size, channels) representing the real image
+    - cycled_image: a tensor of shape (batch_size, image_size, image_size, channels) representing the cycled image
+    
+    Returns:
+    - a scalar tensor representing the segmentation loss
+    """
     real = min_max_norm_tf(real_image)
     cycled = min_max_norm_tf(cycled_image)
     cl_loss_obj = soft_dice_cldice_loss()
@@ -77,6 +177,17 @@ def cycle_seg_loss(self, real_image, cycled_image):
 
 @tf.function
 def identity_loss(self, real_image, same_image, typ=None):
+    """
+    Compute the identity loss between the real image and the same image.
+
+    Args:
+        real_image: the real image
+        same_image: the generated same image
+        typ: the type of loss to use. Currently only supports "cldice", other MAE used.
+
+    Returns:
+        The identity loss between the real image and the same image.
+    """
     if typ is None:
         return self.lambda_identity * MAE(self, real_image, same_image)
     else:
@@ -91,6 +202,22 @@ def identity_loss(self, real_image, same_image, typ=None):
 
 @tf.function
 def generator_loss_fn(self, fake_image, typ=None, from_logits=True):
+    """
+    Calculates the loss for the generator.
+
+    Args:
+        self (object): Instance of the VANGAN class.
+        fake_image (tf.Tensor): Generated fake image tensor.
+        typ (str): Type of loss. If None, default MSE is used.
+                   Else, the valid types are: "bce" - Binary cross-entropy,
+                   "bfce" - Binary focal cross-entropy.
+                   Default: None.
+        from_logits (bool): Whether to use logits or probabilities.
+                            Default: True.
+
+    Returns:
+        tf.Tensor: The generator loss.
+    """
     if typ == None:
         return MSE(self, tf.ones_like(fake_image), fake_image)
     else :
@@ -106,6 +233,20 @@ def generator_loss_fn(self, fake_image, typ=None, from_logits=True):
 
 @tf.function
 def discriminator_loss_fn(self, real_image, fake_image, typ=None, from_logits=True):
+    """
+    Calculates the loss for the discriminator network.
+
+    Args:
+        self: The instance of the VANGAN model.
+        real_image: A tensor representing the real image.
+        fake_image: A tensor representing the fake image.
+        typ (str, optional): The type of loss function to use. Defaults to None.
+        from_logits (bool, optional): Whether to apply sigmoid activation function to the predictions. 
+            Defaults to True.
+
+    Returns:
+        A tensor representing the discriminator loss.
+    """
     if typ == None:
         return 0.5 * (MSE(self, tf.ones_like(real_image), real_image) + MSE(self, tf.zeros_like(fake_image), fake_image))
     else :
