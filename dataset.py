@@ -78,6 +78,15 @@ class dataset_gen:
     
     ''' Functions to gather imaging subvolumes '''
     def datagenA(self, typ='training'):
+        """
+        Generates a batch of data from the pathA directory.
+
+        Args:
+        - typ (str): The type of data to generate, either 'training' or 'validation'. Default is 'training'.
+
+        Returns:
+        - tensor: A tensor of shape [batch_size, height, width, channels] containing the batch of images.
+        """
         iterA = 0
         datasetA = self.pathA[typ]
         np.random.shuffle(datasetA)
@@ -96,6 +105,15 @@ class dataset_gen:
             iterA += 1
     
     def datagenB(self, typ='training'):
+        """
+        Generates a batch of data from the pathB directory.
+
+        Args:
+        - typ (str): The type of data to generate, either 'training' or 'validation'. Default is 'training'.
+
+        Returns:
+        - tensor: A tensor of shape [batch_size, height, width, channels] containing the batch of images.
+        """
         iterB = 0
         datasetB = self.pathB[typ]
         np.random.shuffle(datasetB)
@@ -147,6 +165,19 @@ class dataset_gen:
         return arr
     
     def plotSampleDataset(self):
+        """
+        Plots a sample of the input datasets A and B along with their histograms. 
+        The function saves a 3D TIFF file of the input data.
+
+        Args:
+        - self.trainDatasetA: Dataset A.
+        - self.trainDatasetB: Dataset B.
+        - self.args.DIMENSIONS: Dimensionality of the input data.
+        - self.args.SUBVOL_PATCH_SIZE: Size of the subvolume patch.
+
+        Returns:
+        - None
+        """
             
         #  Visualise some examples
         if self.args.DIMENSIONS == 2:
