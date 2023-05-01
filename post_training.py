@@ -12,7 +12,7 @@ def epoch_sweep(args, vangan_model, plotter, test_path='', start=100, end=200, s
     - start (int): the starting epoch number (inclusive)
     - end (int): the ending epoch number (inclusive)
     - step (int): the number of epochs to skip between each saved image
-    - segmentation (bool): if True, generate segmentation images; otherwise, generate standardization images
+    - segmentation (bool): if True, generate segmentation images; otherwise, generate fake imaging domain images
     
     Returns:
     - None
