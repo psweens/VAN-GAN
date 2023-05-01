@@ -48,6 +48,8 @@ VAN-GAN code was originally developed by [Paul W. Sweeney](www.psweeney.co.uk) w
 
 ## References
 If you use this code or data, we kindly ask that you please cite XX. Please check fthe following reference for more details:
+> [Segmentation of 3D blood vessel networks using unsupervised deep learning](https://doi.org/10.1101/2023.04.30.538453)<br>
+> Paul W. Sweeney et al.
 
 ## Licence
 The project is licenced under the MIT Licence.
