@@ -1,6 +1,22 @@
 import os
 
 def epoch_sweep(args, vangan_model, plotter, test_path='', start=100, end=200, step=2, segmentation=True):
+    """
+    Perform a sweep of epochs for the given VANGAN model and save the resulting images using the given plotter.
+    
+    Args:
+    - args: command-line arguments
+    - vangan_model: a VANGAN object
+    - plotter: a GANMonitor object
+    - test_path (str): path to the directory containing the test images
+    - start (int): the starting epoch number (inclusive)
+    - end (int): the ending epoch number (inclusive)
+    - step (int): the number of epochs to skip between each saved image
+    - segmentation (bool): if True, generate segmentation images; otherwise, generate standardization images
+    
+    Returns:
+    - None
+    """
 
     test_path = '/mnt/sda/VS-GAN_deepVess/testA/'
     
