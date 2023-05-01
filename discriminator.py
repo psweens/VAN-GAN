@@ -18,6 +18,29 @@ def get_discriminator(
     name=None,
     noise_std=0.1
 ):
+    """
+    Creates a discriminator model for a 3D volumetric image using convolutional layers.
+    
+    Args:
+    - input_img_size: Tuple, the shape of the input image in the form (height, width, depth, channels).
+                      Default is (64, 64, 512, 1).
+    - batch_size: Int, the batch size of the input images. Default is None.
+    - filters: Int, the number of filters to use in the first layer of the model. Default is 64.
+    - kernel_initializer: The initializer for the convolutional kernels. Default is None.
+    - num_downsampling: Int, the number of times to downsample the input image with convolutional layers.
+                        Default is 3.
+    - use_dropout: Bool, whether or not to use dropout in the model. Default is False.
+    - wasserstein: Bool, whether or not the model is a Wasserstein GAN. Default is False.
+    - use_SN: Bool, whether or not to use spectral normalization in the convolutional layers. Default is False.
+    - use_input_noise: Bool, whether or not to add Gaussian noise to the input image. Default is False.
+    - use_layer_noise: Bool, whether or not to add Gaussian noise to the convolutional layers. Default is False.
+    - name: String, name for the model. Default is None.
+    - noise_std: Float, the standard deviation of the Gaussian noise to add to the input and/or convolutional layers.
+                 Default is 0.1.
+                 
+    Returns:
+    - A tensorflow model representing the discriminator.
+    """
 
     img_input = layers.Input(
         shape=input_img_size, batch_size=batch_size, name=name + "_img_input"
