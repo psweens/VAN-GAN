@@ -254,7 +254,12 @@ epoch_sweep(args,
 ''' SEGMENTING NEW IMAGES '''
 # Alternatively, to run VANGAN on a directory of images (saved as .npy) using the following example script
 new_imaging_data = DataPrepocessor() # Create data preprocessor
-new_imaging_data.process_new_data('/PATH/TO/DATA/', '/PATH/TO/SAVE/DATA/')
+new_imaging_data.process_new_data(current_path='/PATH/TO/DATA/', 
+                                  new_path='/PATH/TO/SAVE/DATA/',
+                                  preprocess_fn=preprocess_rsom_images,
+                                  tiff_size=args.RAW_IMG_SIZE,
+                                  target_size=args.TARG_RAW_IMG_SIZE,
+                                  resize=True)
 
 filepath = '/PATH/TO/SAVE/DATA/'
 img_files = os.listdir(filepath)
