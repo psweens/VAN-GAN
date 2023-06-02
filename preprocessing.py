@@ -217,12 +217,15 @@ class DataPrepocessor:
         else:
             print('NaN detected ...')
         
-    def process_new_data(self, current_path, new_path, tiff_size=None, target_size=None):
+    def process_new_data(self, current_path, new_path, tiff_size=None, target_size=None, preprocess_fn=None, resize=None):
         
         self.raw_path = current_path
         self.main_dir = new_path
         self.tiff_size = tiff_size
         self.target_size = target_size
+        self.preprocess_fn = preprocess_fn
+        self.resize = resize
+        self.save_filtered = False
         
         files = os.listdir(current_path)
         for file in files:
