@@ -37,29 +37,29 @@ def MSLE(self, real, fake):
 def MAE(self, y_true, y_pred):
     """
     Compute the per-sample mean absolute error (MAE) between the true and predicted tensors.
-    
+
     Args:
     - y_true: A tensor of true values.
     - y_pred: A tensor of predicted values.
-    
+
     Returns:
     - A scalar tensor representing the per-sample MAE between the true and predicted tensors.
     """
-  return reduce_mean(self, tf.abs(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
+    return reduce_mean(self, tf.abs(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
 
 @tf.function
 def MSE(self, y_true, y_pred):
     """
     Compute the per-sample mean squared error (MSE) between the true and predicted tensors.
-    
+
     Args:
     - y_true: A tensor of true values.
     - y_pred: A tensor of predicted values.
-    
+
     Returns:
     - A scalar tensor representing the per-sample MSE between the true and predicted tensors.
     """
-  return reduce_mean(self, tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
+    return reduce_mean(self, tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
 
 @tf.function
 def L4(self, y_true, y_pred):
@@ -143,16 +143,16 @@ def cycle_loss(self, real_image, cycled_image, typ=None):
         return reduce_mean(self, loss_obj(real, cycled)) * self.lambda_cycle
         
 @tf.function
-def cycle_perceptual(self, real_image, cycled_image):
+def cycle_reconstruction(self, real_image, cycled_image):
     """
-    Return the per sample cycle perceptual loss using Structural Similarity Index (SSIM) loss
+    Return the per sample cycle reconstruction loss using Structural Similarity Index (SSIM) loss
 
     Args:
     - real_image: Tensor, shape (batch_size, H, W, C), representing the real image
     - cycled_image: Tensor, shape (batch_size, H, W, C), representing the cycled image
 
     Returns:
-    - loss: float Tensor, representing the per sample cycle perceptual loss
+    - loss: float Tensor, representing the per sample cycle reconstruction loss
     """
     real = min_max_norm_tf(real_image)
     cycled = min_max_norm_tf(cycled_image)

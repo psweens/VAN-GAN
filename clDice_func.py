@@ -2,15 +2,18 @@ import tensorflow as tf
 from keras import layers as KL
 from keras import backend as K
 
-''' https://github.com/jocpae/clDice'''
+''' Based on: https://github.com/jocpae/clDice'''
 
 
 def soft_erode(img):
-    """[This function performs soft-erosion operation on a float32 image]
+    """
+    Perform soft erosion on a given image tensor.
+
     Args:
-        img ([float32]): [image to be soft eroded]
+    img (tf.Tensor): Input image tensor on which soft erosion will be performed.
+
     Returns:
-        [float32]: [the eroded image]
+    (tf.Tensor): Image tensor after performing soft erosion.
     """
     if len(img.shape) == 4:
         p2 = -KL.MaxPool2D(pool_size=(3, 1), strides=(1, 1), padding='same', data_format=None)(-img)
@@ -24,11 +27,14 @@ def soft_erode(img):
 
 
 def soft_dilate(img):
-    """[This function performs soft-dilation operation on a float32 image]
+    """
+    Perform soft dilation on a given image tensor.
+
     Args:
-        img ([float32]): [image to be soft dialated]
+    img (tf.Tensor): Input image tensor on which soft dilation will be performed.
+
     Returns:
-        [float32]: [the dialated image]
+    (tf.Tensor): Image tensor after performing soft dilation.
     """
     if len(img.shape) == 4:
         return KL.MaxPool2D(pool_size=(3, 3), strides=(1, 1), padding='same', data_format=None)(img)
@@ -37,11 +43,14 @@ def soft_dilate(img):
 
 
 def soft_open(img):
-    """[This function performs soft-open operation on a float32 image]
+    """
+    Perform soft opening on a given image tensor.
+
     Args:
-        img ([float32]): [image to be soft opened]
+    img (tf.Tensor): Input image tensor on which soft opening will be performed.
+
     Returns:
-        [float32]: [image after soft-open]
+    (tf.Tensor): Image tensor after performing soft opening.
     """
     img = soft_erode(img)
     img = soft_dilate(img)
@@ -49,82 +58,92 @@ def soft_open(img):
 
 
 def soft_skel(img, iters):
-    """[summary]
+    """
+    Perform soft skeletonisation on a given image tensor.
+
     Args:
-        img ([float32]): [description]
-        iters ([int]): [description]
+    img (tf.Tensor): Input image tensor on which skeletonisation will be performed.
+    iters (int): Number of iterations for skeletonisation.
+
     Returns:
-        [float32]: [description]
+    (tf.Tensor): Skeletonised image tensor after performing soft skeletonisation.
     """
     img1 = soft_open(img)
-    skel = tf.nn.relu(img-img1)
+    skel = tf.nn.relu(img - img1)
 
     for j in range(iters):
         img = soft_erode(img)
         img1 = soft_open(img)
-        delta = tf.nn.relu(img-img1)
+        delta = tf.nn.relu(img - img1)
         intersect = tf.math.multiply(skel, delta)
-        skel += tf.nn.relu(delta-intersect)
+        skel += tf.nn.relu(delta - intersect)
     return skel
 
 
-def soft_clDice_loss(iter_ = 50):
-    """[function to compute dice loss]
-    Args:
-        iter_ (int, optional): [skeletonization iteration]. Defaults to 50.
+def soft_clDice_loss(y_true, y_pred, iter_=50):
     """
-    def loss(y_true, y_pred):
-        """[function to compute dice loss]
-        Args:
-            y_true ([float32]): [ground truth image]
-            y_pred ([float32]): [predicted image]
-        Returns:
-            [float32]: [loss value]
-        """
-        smooth = 1.
-        skel_pred = soft_skel(y_pred, iter_)
-        skel_true = soft_skel(y_true, iter_)
-        pres = (K.sum(tf.math.multiply(skel_pred, y_true))+smooth)/(K.sum(skel_pred)+smooth)    
-        rec = (K.sum(tf.math.multiply(skel_true, y_pred))+smooth)/(K.sum(skel_true)+smooth)    
-        cl_dice = 1.- 2.0*(pres*rec)/(pres+rec)
-        return cl_dice
-    return loss
+    Compute the soft centre-line (clDice) loss, which is a variant of the Dice loss used in segmentation tasks.
+
+    Args:
+    y_true (tf.Tensor): The ground truth segmentation mask tensor.
+    y_pred (tf.Tensor): The predicted segmentation mask tensor.
+    iter_ (int, optional): The number of iterations for skeletonization. Defaults to 50.
+
+    Returns:
+    (tf.Tensor): The computed soft clDice loss.
+    """
+    smooth = 1.
+    skel_pred = soft_skel(y_pred, iter_)
+    skel_true = soft_skel(y_true, iter_)
+    pres = (K.sum(tf.math.multiply(skel_pred, y_true)) + smooth) / (K.sum(skel_pred) + smooth)
+    rec = (K.sum(tf.math.multiply(skel_true, y_pred)) + smooth) / (K.sum(skel_true) + smooth)
+    cl_dice = 1. - 2.0 * (pres * rec) / (pres + rec)
+
+    return cl_dice
 
 
 def soft_dice(y_true, y_pred):
-    """[function to compute dice loss]
+    """
+    Compute the soft Dice loss.
+
     Args:
-        y_true ([float32]): [ground truth image]
-        y_pred ([float32]): [predicted image]
+    y_true (tf.Tensor): The ground truth segmentation mask tensor.
+    y_pred (tf.Tensor): The predicted segmentation mask tensor.
+
     Returns:
-        [float32]: [loss value]
+    (tf.Tensor): The computed soft Dice loss.
     """
     smooth = 1
     intersection = K.sum((y_true * y_pred))
-    coeff = (2. *  intersection + smooth) / (K.sum(y_true) + K.sum(y_pred) + smooth)
-    return (1. - coeff)
+    coeff = (2. * intersection + smooth) / (K.sum(y_true) + K.sum(y_pred) + smooth)
+    return 1. - coeff
 
 
-def soft_dice_cldice_loss(iters = 15, alpha=0.5):
-    """[function to compute dice+cldice loss]
-    Args:
-        iters (int, optional): [skeletonization iteration]. Defaults to 15.
-        alpha (float, optional): [weight for the cldice component]. Defaults to 0.5.
+def soft_dice_cldice_loss(iters=15, alpha=0.5):
     """
+    Compute the combined soft Dice and clDice loss, a variant of the Dice loss used in segmentation tasks.
+
+    Args:
+    iters (int, optional): The number of iterations for skeletonisation. Defaults to 15.
+    alpha (float, optional): The weight for the clDice component. Defaults to 0.5.
+
+    Returns:
+    (function): The loss function to be used in training.
+    """
+
     def loss(y_true, y_pred):
-        """[summary]
-        Args:
-            y_true ([float32]): [ground truth image]
-            y_pred ([float32]): [predicted image]
-        Returns:
-            [float32]: [loss value]
         """
-        smooth = 1.
-        skel_pred = soft_skel(y_pred, iters)
-        skel_true = soft_skel(y_true, iters)
-        pres = (K.sum(tf.math.multiply(skel_pred, y_true))+smooth)/(K.sum(skel_pred)+smooth)    
-        rec = (K.sum(tf.math.multiply(skel_true, y_pred))+smooth)/(K.sum(skel_true)+smooth)    
-        cl_dice = 1.- 2.0*(pres*rec)/(pres+rec)
+        Compute the combined soft Dice and clDice loss for a single batch of data.
+
+        Args:
+        y_true (tf.Tensor): The ground truth segmentation mask tensor.
+        y_pred (tf.Tensor): The predicted segmentation mask tensor.
+
+        Returns:
+        (tf.Tensor): The computed combined loss value.
+        """
+        cl_dice = soft_clDice_loss(y_true, y_pred, iters)
         dice = soft_dice(y_true, y_pred)
-        return (1.0-alpha)*dice+alpha*cl_dice
+        return (1.0 - alpha) * dice + alpha * cl_dice
+
     return loss

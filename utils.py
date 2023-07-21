@@ -5,6 +5,7 @@ import tensorflow as tf
 import skimage.io as sk
 from skimage import exposure
 
+
 def min_max_norm(data):
     """
     Perform min-max normalisation on a N-dimensional numpy array.
@@ -21,7 +22,8 @@ def min_max_norm(data):
         raise ValueError("Cannot perform min-max normalization when max and min are equal.")
     return (data - dmin) / (dmax - dmin)
 
-def min_max_norm_tf(arr, axis = None):
+
+def min_max_norm_tf(arr, axis=None):
     """
     Performs min-max normalization on a given array using TensorFlow library.
 
@@ -32,7 +34,7 @@ def min_max_norm_tf(arr, axis = None):
     Returns:
     - tensor: A normalized tensor with the same shape as the input array.
     """
-    
+
     if axis is None:
         # Normalize entire array
         min_val = tf.reduce_min(arr)
@@ -43,10 +45,11 @@ def min_max_norm_tf(arr, axis = None):
         min_val = tf.reduce_min(arr, axis=axis, keepdims=True)
         max_val = tf.reduce_max(arr, axis=axis, keepdims=True)
         tensor = (arr - min_val) / (max_val - min_val)
-    
+
     return tensor
 
-def rescale_arr_tf(arr, alpha = -0.5, beta = 0.5):
+
+def rescale_arr_tf(arr, alpha=-0.5, beta=0.5):
     """
     Rescales the values in a tensor using the alpha and beta parameters.
     alpha = -0.5, beta = 0.5: [0,1] to [-1,1]
@@ -61,6 +64,7 @@ def rescale_arr_tf(arr, alpha = -0.5, beta = 0.5):
     - A rescaled tensor with the same shape as the input tensor.
     """
     return tf.math.divide_no_nan((arr + alpha), beta)
+
 
 def z_score_norm(data):
     """
@@ -77,7 +81,7 @@ def z_score_norm(data):
         return (data - np.mean(data)) / dstd
     else:
         raise ValueError("Cannot perform z-score normalization when the standard deviation is zero.")
-        
+
 
 def check_nan(arr):
     """
@@ -91,6 +95,7 @@ def check_nan(arr):
     """
     return np.any(np.isnan(arr))
 
+
 def replace_nan(arr):
     """
     Replace NaN (Not a Number) values in a NumPy array with zeros.
@@ -103,7 +108,35 @@ def replace_nan(arr):
     """
     return tf.where(tf.math.is_nan(arr), tf.zeros_like(arr), arr)
 
-def load_volume(file, size=(600,600,700), datatype='uint8', normalise=True):
+
+def binarise_tensor(arr):
+    """
+     Binarise a TensorFlow tensor by replacing positive values with ones and non-positive values with negative ones.
+
+     Args:
+     arr (tf.Tensor): Input TensorFlow tensor to be binarised.
+
+     Returns:
+     (tf.Tensor): Binarized TensorFlow tensor with ones for positive values and negative ones for non-positive values.
+     """
+    return tf.where(tf.math.greater_equal(arr, tf.zeros(tf.shape(arr))),
+                    tf.ones(tf.shape(arr)),
+                    tf.math.negative(tf.ones(tf.shape(arr))))
+
+def add_gauss_noise(self, img, rate):
+    """
+    Add Gaussian noise to a TensorFlow image tensor.
+
+    Args:
+    img (tf.Tensor): Input TensorFlow image tensor to which noise will be added.
+    rate (float): Standard deviation of the Gaussian noise.
+
+    Returns:
+    (tf.Tensor): TensorFlow image tensor with added Gaussian noise and values clipped between -1.0 and 1.0.
+    """
+    return tf.clip_by_value(img + tf.random.normal(tf.shape(img), 0.0, rate), -1., 1.)
+
+def load_volume(file, size=(600, 600, 700), datatype='uint8', normalise=True):
     """
     Load a volume from a (for example) tif file and normalise it.
     
@@ -122,6 +155,7 @@ def load_volume(file, size=(600,600,700), datatype='uint8', normalise=True):
         vol = min_max_norm(vol)
     return vol
 
+
 def resize_volume(img, target_size=None):
     """
     Resize a 3D volume to a target size.
@@ -133,27 +167,28 @@ def resize_volume(img, target_size=None):
     Returns:
     numpy.ndarray: The resized 3D volume.
     """
-    
+
     # Create two arrays to hold intermediate and final results
     arr1 = np.empty([target_size[0], target_size[1], img.shape[2]], dtype='float32')
     arr2 = np.empty([target_size[0], target_size[1], target_size[2]], dtype='float32')
-    
+
     # If the input volume's width and height don't match the target size, resize each slice along the z-axis
     if not img.shape[0:2] == target_size[0:2]:
         for i in range(img.shape[2]):
-            arr1[:,:,i] = cv2.resize(img[:,:,i], (target_size[0], target_size[1]),
-                                     interpolation=cv2.INTER_LANCZOS4)
-        
+            arr1[:, :, i] = cv2.resize(img[:, :, i], (target_size[0], target_size[1]),
+                                       interpolation=cv2.INTER_LANCZOS4)
+
         for i in range(target_size[0]):
-            arr2[i,:,:] = cv2.resize(arr1[i,], (target_size[2], target_size[1]),
-                                     interpolation=cv2.INTER_LANCZOS4)
-          
-    else: # If the input volume's width and height match the target size, resize each slice along the x-axis
+            arr2[i, :, :] = cv2.resize(arr1[i,], (target_size[2], target_size[1]),
+                                       interpolation=cv2.INTER_LANCZOS4)
+
+    else:  # If the input volume's width and height match the target size, resize each slice along the x-axis
         for i in range(target_size[0]):
-            arr2[i,:,:] = cv2.resize(img[i,], (target_size[2], target_size[1]),
-                                     interpolation=cv2.INTER_LANCZOS4)
-        
+            arr2[i, :, :] = cv2.resize(img[i,], (target_size[2], target_size[1]),
+                                       interpolation=cv2.INTER_LANCZOS4)
+
     return arr2
+
 
 def get_vaccuum(arr, dim):
     """
@@ -168,11 +203,12 @@ def get_vaccuum(arr, dim):
     """
     if dim == 2:
         x, y = np.nonzero(arr)
-        return arr[x.min():x.max()+1, y.min():y.max()+1]
+        return arr[x.min():x.max() + 1, y.min():y.max() + 1]
     else:
         x, y, z = np.nonzero(arr)
-        return arr[x.min():x.max()+1, y.min():y.max()+1, z.min():z.max()+1]
-    
+        return arr[x.min():x.max() + 1, y.min():y.max() + 1, z.min():z.max() + 1]
+
+
 def hist_equalization(img):
     """
     Applies histogram equalization to the input image.
@@ -185,7 +221,8 @@ def hist_equalization(img):
     """
     img_cdf, bin_centers = exposure.cumulative_distribution(img)
     return np.interp(img, bin_centers, img_cdf)
-        
+
+
 def save_dict(di_, filename_):
     """Saves a Python dictionary object to a file using the pickle module.
 
@@ -198,6 +235,7 @@ def save_dict(di_, filename_):
     """
     with open(filename_, 'wb') as f:
         pickle.dump(di_, f)
+
 
 def load_dict(filename_):
     """
@@ -212,7 +250,8 @@ def load_dict(filename_):
         ret_di = pickle.load(f)
     return ret_di
 
-def append_dict(dict1, dict2, replace = False) -> dict:
+
+def append_dict(dict1, dict2, replace=False) -> dict:
     """
     Append items in dict2 to dict1.
     
@@ -259,10 +298,10 @@ def get_sub_volume(image, subvol=(64, 64, 512), n_samples=1):
     Returns:
     - subvol (numpy.ndarray): A numpy array of shape (subvol[0], subvol[1], subvol[2], subvol[3]) representing the sub-volume extracted from the input image tensor.
     """
-    
+
     # Initialize features and labels with `None`
     sample = np.empty([subvol[0], subvol[1], subvol[2], subvol[3]], dtype='float32')
-    
+
     # randomly sample sub-volume by sampling the corner voxel
     start_x = np.random.randint(image.shape[0] - subvol[0] + 1)
     start_y = np.random.randint(image.shape[1] - subvol[1] + 1)
@@ -270,10 +309,11 @@ def get_sub_volume(image, subvol=(64, 64, 512), n_samples=1):
 
     # make copy of the sub-volume
     sample = np.copy(image[start_x: start_x + subvol[0],
-                      start_y: start_y + subvol[1],
-                      start_z: start_z + subvol[2], :])
-    
+                     start_y: start_y + subvol[1],
+                     start_z: start_z + subvol[2], :])
+
     return sample
+
 
 def get_shape(arr):
     """

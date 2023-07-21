@@ -1,24 +1,23 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
-
 import shutil
 import glob
 import argparse
 import numpy as np
 import scipy.stats as sp
 import tensorflow as tf
-tf.keras.backend.clear_session()
-
 from time import time
 from vangan import VanGan, train
-from custom_callback import GAN_Monitor
-from dataset import dataset_gen
-from preprocessing import DataPrepocessor
+from custom_callback import GanMonitor
+from dataset import DatasetGen
+from preprocessing import DataPreprocessor
 from tb_callback import TB_Summary
 from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm
 from post_training import epoch_sweep
 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
+
+tf.keras.backend.clear_session()
 
 print('*** Setting up GPU ***')
 ''' SET GPU MEMORY USAGE '''
@@ -26,7 +25,6 @@ physical_devices = tf.config.list_physical_devices('GPU')
 # Prevent allocation of all memory
 for i in range(len(physical_devices)):
     tf.config.experimental.set_memory_growth(physical_devices[i], True)
-
 
 ''' SET TF GPU STRATEGY '''
 strategy = tf.distribute.MirroredStrategy(['GPU:0', 'GPU:1', 'GPU:2', 'GPU:3'])
@@ -43,7 +41,7 @@ strategy = tf.distribute.MirroredStrategy(['GPU:0', 'GPU:1', 'GPU:2', 'GPU:3'])
 
 ''' ORGANISE TENSORBOARD OUTPUT FOLDERS '''
 print('*** Organising tensorboard folders ***')
-tensorboardDir = 'logs'
+tensorboardDir = 'TB_Logs'
 monitorDir = 'GANMonitor'
 if os.path.isdir(tensorboardDir):
     shutil.rmtree(tensorboardDir)
@@ -55,9 +53,8 @@ if os.path.isdir(monitorDir):
         os.remove(f)
 else:
     os.makedirs(monitorDir)
- 
-summary = TB_Summary('logs/') # Initialise TensorBoard summary helper
 
+summary = TB_Summary(tensorboardDir)  # Initialise TensorBoard summary helper
 
 ''' SET PARAMETERS '''
 print('*** Setting VANGAN parameters ***')
@@ -70,23 +67,21 @@ args.MAX_PIXEL_VALUE = 0.8
 
 # Training parameters
 args.EPOCHS = 200
-args.BATCH_SIZE = 4
+args.BATCH_SIZE = 3
 args.GLOBAL_BATCH_SIZE = args.N_DEVICES * args.BATCH_SIZE
 args.PREFETCH_SIZE = 4
-args.INITIAL_LR = 2e-4 # Learning rate
-args.INITIATE_LR_DECAY = 0.5 * args.EPOCHS # Set start of learning rate decay to 0
-args.NO_NOISE = args.EPOCHS # Set when discriminator noise decays to 0
-args.KERNEL_INIT = tf.keras.initializers.HeNormal() # Weights initializer for the layers.
-args.GAMMA_INIT = tf.keras.initializers.HeNormal() # Gamma initializer for instance normalization.
+args.INITIAL_LR = 2e-4  # Learning rate
+args.INITIATE_LR_DECAY = 0.5 * args.EPOCHS  # Set start of learning rate decay to 0
+args.NO_NOISE = args.EPOCHS  # Set when discriminator noise decays to 0
 
 # Image parameters
 args.CHANNELS = 1
 args.DIMENSIONS = 3
-args.RAW_IMG_SIZE = (512, 512, 140, args.CHANNELS) # Unprocessed imaging domain image dimensions
-args.TARG_RAW_IMG_SIZE = (512, 512, 128, args.CHANNELS) # Target size if downsampling
-args.SYNTH_IMG_SIZE = (512, 512, 128) # Unprocessed segmentation domain image dimensions
-args.TARG_SYNTH_IMG_SIZE = (512, 512, 128) # Target size if downsampling
-args.SUBVOL_PATCH_SIZE = (128, 128, 128) # Size of subvolume to be trained on
+args.RAW_IMG_SIZE = (512, 512, 140, args.CHANNELS)  # Unprocessed imaging domain image dimensions
+args.TARG_RAW_IMG_SIZE = (512, 512, 128, args.CHANNELS)  # Target size if downsampling
+args.SYNTH_IMG_SIZE = (512, 512, 128)  # Unprocessed segmentation domain image dimensions
+args.TARG_SYNTH_IMG_SIZE = (512, 512, 128)  # Target size if downsampling
+args.SUBVOL_PATCH_SIZE = (128, 128, 128)  # Size of subvolume to be trained on
 # Set model input image size for training (based on above)
 if args.DIMENSIONS == 2:
     args.INPUT_IMG_SIZE = (
@@ -105,12 +100,11 @@ else:
     )
 
 # Set callback parameters
-args.PERIOD_2D_CALLBACK = 2 # Period of epochs to output a 2D validation dataset example
-args.PERIOD_3D_CALLBACK = 2 # Period of epochs to output a 3D validation dataset example
+args.PERIOD_2D_CALLBACK = 2  # Period of epochs to output a 2D validation dataset example
+args.PERIOD_3D_CALLBACK = 2  # Period of epochs to output a 3D validation dataset example
 
-
-'''' PREPROCESSING '''    
-imaging_data = DataPrepocessor(args,
+'''' PREPROCESSING '''
+imaging_data = DataPreprocessor(args,
                                 raw_path='/mnt/sdb/3DcycleGAN_simLNet_LNet/raw_data/simLNet',
                                 main_dir='/mnt/sdb/3DcycleGAN_simLNet_LNet/',
                                 partition_id='A',
@@ -118,13 +112,14 @@ imaging_data = DataPrepocessor(args,
                                 tiff_size=args.RAW_IMG_SIZE,
                                 target_size=args.TARG_RAW_IMG_SIZE)
 
-synth_data = DataPrepocessor(args,
-                            raw_path='/mnt/sdb/3DcycleGAN_simLNet_LNet/raw_data/LNet',
-                            main_dir='/mnt/sdb/3DcycleGAN_simLNet_LNet/',
-                            partition_id='B',
-                            partition_filename='dataB_partition.pkl',
-                            tiff_size=args.SYNTH_IMG_SIZE,
-                            target_size=args.TARG_SYNTH_IMG_SIZE)
+synth_data = DataPreprocessor(args,
+                              raw_path='/mnt/sdb/3DcycleGAN_simLNet_LNet/raw_data/LNet',
+                              main_dir='/mnt/sdb/3DcycleGAN_simLNet_LNet/',
+                              partition_id='B',
+                              partition_filename='dataB_partition.pkl',
+                              tiff_size=args.SYNTH_IMG_SIZE,
+                              target_size=args.TARG_SYNTH_IMG_SIZE)
+
 
 # Function used for preprocessing imaging domain images
 # The following is used for preprocessing raster-scanning optoacoustic mesoscopic (RSOM) image volumes
@@ -140,18 +135,19 @@ def preprocess_rsom_images(img, lower_thresh=0.05, upper_thresh=99.95):
     Returns:
     - np.ndarray: The preprocessed 3D numpy array.
     """
-    
+
     # Slice-wise Z-Score Normalisation
     for z in range(img.shape[2]):
-        img[...,z] = z_score_norm(img[...,z])
-        
+        img[..., z] = z_score_norm(img[..., z])
+
     # Clipping of upper and lower percentiles
     lp = sp.scoreatpercentile(img, lower_thresh)
     up = sp.scoreatpercentile(img, upper_thresh)
     img[img < lp] = lp
     img[img > up] = up
-    
+
     return img
+
 
 # Perform any preprocessing of images if neccessary
 # imaging_data.preprocess(preprocess_fn=preprocess_rsom_images,
@@ -163,98 +159,95 @@ def preprocess_rsom_images(img, lower_thresh=0.05, upper_thresh=99.95):
 imaging_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataA_partition.pkl')
 synth_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataB_partition.pkl')
 
-
 ''' GENERATE TENSORFLOW DATASETS '''
 print('*** Generating datasets for model ***')
-# Define function to preprocess imaging domain image on the fly (OTF)
+
+
+# Define function to preprocess imaging domain image on the fly (otf)
 # Min/max normalisation and rescaling to [-1,1] shown here
 @tf.function
-def process_imaging_OTF(image):
+def process_imaging_otf(image):
     return rescale_arr_tf(
-                        min_max_norm_tf(image)
-                        )
+        min_max_norm_tf(image)
+    )
+
 
 # Define dataset class
-getDataset = dataset_gen(args = args, 
-                         imaging_domain_data = imaging_data.partition, 
-                         seg_domain_data = synth_data.partition, 
-                         strategy = strategy, 
-                         otf_imaging = process_imaging_OTF # Set to None if OTF processing not needed
-                         )
-
+getDataset = DatasetGen(args=args,
+                        imaging_domain_data=imaging_data.partition,
+                        seg_domain_data=synth_data.partition,
+                        strategy=strategy,
+                        otf_imaging=process_imaging_otf  # Set to None if OTF processing not needed
+                        )
 
 ''' CALCULATE NUMBER OF TRAINING / VALIDATION STEPS '''
-args.train_steps = int(np.amax([len(imaging_data.partition['training']), 
+args.train_steps = int(np.amax([len(imaging_data.partition['training']),
                                 len(synth_data.partition['training'])]) / args.GLOBAL_BATCH_SIZE)
 
 args.val_steps = int(np.amax([len(imaging_data.partition['validation']),
                               len(synth_data.partition['validation'])]) / args.GLOBAL_BATCH_SIZE)
 
-
 ''' DEFINE VANGAN '''
-vangan_model = VanGan(args, 
-                        strategy = strategy,
-                        genAB_typ = 'resUnet',
-                        genBA_typ = 'resUnet'
-                        )
-
+vangan_model = VanGan(args,
+                      strategy=strategy,
+                      gen_i2s='resUnet',
+                      gen_s2i='resUnet'
+                      )
 
 ''' DEFINE CUSTOM CALLBACK '''
-plotter = GAN_Monitor(args,
-                    dataset = getDataset,
-                    Alist = imaging_data.partition['validation'],
-                    Blist = synth_data.partition['validation'],
-                    process_imaging_domain = process_imaging_OTF
-                    )
- 
+plotter = GanMonitor(args,
+                     dataset=getDataset,
+                     Alist=imaging_data.partition['validation'],
+                     Blist=synth_data.partition['validation'],
+                     process_imaging_domain=process_imaging_otf
+                     )
 
 ''' TRAIN VAN-GAN MODEL '''
 for epoch in range(args.EPOCHS):
     print(f'\nEpoch {epoch + 1:03d}/{args.EPOCHS:03d}')
     start = time()
-    
+
     vangan_model.current_epoch = epoch
     plotter.on_epoch_start(vangan_model, epoch, args)
-    
+
     'Training GAN for fixed no. of steps'
-    results = train(args, getDataset.train_ds, vangan_model, summary, epoch, args.train_steps, 'Train')
+    results = train(getDataset.train_dataset, vangan_model, summary, epoch, args.train_steps, 'Train')
     summary.losses(results)
-    
+
     'Run GAN for validation dataset'
-    results = train(args, getDataset.val_ds, vangan_model, summary, epoch, args.val_steps, 'Validate', training=False)
+    results = train(getDataset.val_dataset, vangan_model, summary, epoch, args.val_steps, 'Validate',
+                    training=False)
     summary.losses(results)
-    
-    
-    if (epoch) % args.PERIOD_2D_CALLBACK == 1 or epoch == args.EPOCHS - 1:
-        plotter.on_epoch_end(vangan_model, epoch, args)  
+
+    if epoch % args.PERIOD_2D_CALLBACK == 1 or epoch == args.EPOCHS - 1:
+        plotter.on_epoch_end(vangan_model, epoch, args)
         vangan_model.save_checkpoint(epoch=epoch)
-        
+
     end = time()
     summary.scalar('elapse', end - start, epoch=epoch, training=True)
 
-
 ''' CREATE VANGAN PREDICTIONS '''
 # Predict segmentation probability maps for imaging test dataset
-plotter.run_mapping(vangan_model, imaging_data.partition['testing'], args.INPUT_IMG_SIZE, filetext='VANGAN_', filepath=args.output_dir, segmentation=True, stride=(25,25,25))
+plotter.run_mapping(vangan_model, imaging_data.partition['testing'], args.INPUT_IMG_SIZE, filetext='VANGAN_',
+                    filepath=args.output_dir, segmentation=True, stride=(25, 25, 25))
 # Prediction fake imaging data using synthetic segmentation test dataset
-plotter.run_mapping(vangan_model, synth_data.partition['testing'], args.INPUT_IMG_SIZE, filetext='VANGAN_', filepath=args.output_dir, segmentation=False, stride=(25,25,25))
-
+plotter.run_mapping(vangan_model, synth_data.partition['testing'], args.INPUT_IMG_SIZE, filetext='VANGAN_',
+                    filepath=args.output_dir, segmentation=False, stride=(25, 25, 25))
 
 ''' TESTING PREDICTIONS ACROSS EPOCHS '''
-epoch_sweep(args, 
-            vangan_model, 
-            plotter, 
-            test_path='/PATH/TO/TEST/DATA/', # Can use imaging_data.partition['testing']
-            start=100, 
-            end=200, 
-            segmentation=True # Set to False if fake imaging is wanted
+epoch_sweep(args,
+            vangan_model,
+            plotter,
+            test_path='/PATH/TO/TEST/DATA/',  # Can use imaging_data.partition['testing']
+            start=100,
+            end=200,
+            segmentation=True  # Set to False if fake imaging is wanted
             )
-
 
 ''' SEGMENTING NEW IMAGES '''
 # Alternatively, to run VANGAN on a directory of images (saved as .npy) using the following example script
-new_imaging_data = DataPrepocessor() # Create data preprocessor
-new_imaging_data.process_new_data(current_path='/PATH/TO/DATA/', 
+new_imaging_data = DataPreprocessor()  # Create data preprocessor
+new_imaging_data.process_new_data(current_path='/PATH/TO/DATA/',
                                   new_path='/PATH/TO/SAVE/DATA/',
                                   preprocess_fn=preprocess_rsom_images,
                                   tiff_size=args.RAW_IMG_SIZE,
@@ -265,4 +258,5 @@ filepath = '/PATH/TO/SAVE/DATA/'
 img_files = os.listdir(filepath)
 for file in img_files:
     img_files[file] = os.path.join(filepath, file)
-plotter.run_mapping(vangan_model, img_files, args.INPUT_IMG_SIZE, filetext='VANGAN_', filepath=args.output_dir, segmentation=True, stride=(25,25,25))
+plotter.run_mapping(vangan_model, img_files, args.INPUT_IMG_SIZE, filetext='VANGAN_', filepath=args.output_dir,
+                    segmentation=True, stride=(25, 25, 25))
