@@ -15,15 +15,15 @@ class GanMonitor:
     def __init__(self,
                  args,
                  dataset=None,
-                 Alist=None,
-                 Blist=None,
+                 imaging_val_data=None,
+                 segmentation_val_data=None,
                  process_imaging_domain=None):
 
         self.imgSize = args.INPUT_IMG_SIZE
-        self.test_AB = dataset.valFullDatasetA
-        self.test_BA = dataset.valFullDatasetB
-        self.Alist = Alist
-        self.Blist = Blist
+        self.imaging_val_full_vol_data = dataset.imaging_val_full_vol_data
+        self.segmentation_val_full_vol_data = dataset.segmentation_val_full_vol_data
+        self.imaging_val_data = imaging_val_data
+        self.segmentation_val_data = segmentation_val_data
         self.process_imaging_domain = process_imaging_domain
         self.period = args.PERIOD_2D_CALLBACK,
         self.period3D = args.PERIOD_3D_CALLBACK,
@@ -172,7 +172,7 @@ class GanMonitor:
                           start_col:(start_col + kW),
                           start_dep:(start_dep + kD)]
 
-                    if process_img == True and self.process_imaging_domain is not None:
+                    if process_img and self.process_imaging_domain is not None:
                         arr = self.process_imaging_domain(arr)
 
                     arr = gen(np.expand_dims(arr,
@@ -263,7 +263,7 @@ class GanMonitor:
                 tf.image.random_crop(sample, size=(self.imgSize[1], self.imgSize[2], self.imgSize[3], self.imgSize[4])),
                 axis=0)
 
-        if process_img == True and self.process_imaging_domain is not None:
+        if process_img and self.process_imaging_domain is not None:
             sample = self.process_imaging_domain(sample)
 
         prediction = genX(sample, training=False)
@@ -323,7 +323,7 @@ class GanMonitor:
         plt.close()
 
         # Generate 3D predictions, stitch and save
-        if epoch % self.period3D == 1 and outputFull:  # and epoch > 160:
+        if epoch % self.period3D == 1 and outputFull and epoch > 160:
             self.stitch_subvolumes(genX, storeSample.numpy(),
                                    self.imgSize, epoch=epoch, name=sampleName, process_img=process_img)
 
@@ -463,8 +463,10 @@ class GanMonitor:
         """
 
         # Generate 2D plots
-        self.imagePlotter(epoch, "genAB", self.Alist, self.test_AB, model.gen_IS, model.gen_SI, process_img=True)
-        self.imagePlotter(epoch, "genBA", self.Blist, self.test_BA, model.gen_SI, model.gen_IS, outputFull=True)
+        self.imagePlotter(epoch, "genIS", self.imaging_val_data, self.imaging_val_full_vol_data, model.gen_IS,
+                          model.gen_SI, process_img=True)
+        self.imagePlotter(epoch, "geSI", self.segmentation_val_data, self.segmentation_val_full_vol_data, model.gen_SI,
+                          model.gen_IS, outputFull=True)
 
     def run_mapping(self, model, test_set, sub_img_size=(64, 64, 512, 1), segmentation=True, stride=(25, 25, 1),
                     padFactor=0.25, filetext=None, filepath=''):

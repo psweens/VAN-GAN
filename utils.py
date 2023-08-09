@@ -25,11 +25,11 @@ def min_max_norm(data):
 
 def min_max_norm_tf(arr, axis=None):
     """
-    Performs min-max normalization on a given array using TensorFlow library.
+    Performs min-max normalisation on a given array using TensorFlow library.
 
     Args:
     - arr: A tensor, which needs to be normalized.
-    - axis: (Optional) An integer specifying the axis along which to normalize. If None, the entire array will be normalized.
+    - axis: (Optional) An integer specifying the axis along which to normalise.
 
     Returns:
     - tensor: A normalized tensor with the same shape as the input array.
@@ -80,7 +80,36 @@ def z_score_norm(data):
     if dstd > 0.:
         return (data - np.mean(data)) / dstd
     else:
-        raise ValueError("Cannot perform z-score normalization when the standard deviation is zero.")
+        return data - np.mean(data)
+        # raise ValueError("Cannot perform z-score normalization when the standard deviation is zero.")
+
+
+def threshold_outliers(image_volume, threshold=6):
+    """
+    Thresholds outlier voxels in the input 3D image volume.
+
+    Args:
+    image_volume (np.ndarray): The input 3D image volume as a NumPy array.
+    threshold (float): The z-score threshold for outlier detection.
+
+    Returns:
+    (np.ndarray): The thresholded image volume after removing outliers.
+    """
+    # Calculate the mean and standard deviation of the image volume
+    mean_intensity = np.mean(image_volume)
+    std_intensity = np.std(image_volume)
+
+    # Calculate the z-scores for the whole image volume
+    z_scores = np.abs((image_volume - mean_intensity) / std_intensity)
+
+    # Determine the largest and smallest voxel intensities not deemed outliers
+    upper_limit = np.max(image_volume[z_scores <= threshold])
+    lower_limit = np.min(image_volume[z_scores <= threshold])
+
+    # Threshold the image volume based on the upper and lower limits
+    thresholded_image = np.clip(image_volume, a_min=lower_limit, a_max=upper_limit)
+
+    return thresholded_image
 
 
 def check_nan(arr):
@@ -295,12 +324,9 @@ def get_sub_volume(image, subvol=(64, 64, 512), n_samples=1):
     - subvol (tuple): A tuple of integers representing the shape of the sub-volume to extract.
     - n_samples (int): An integer representing the number of sub-volumes to extract.
 
-    Returns:
-    - subvol (numpy.ndarray): A numpy array of shape (subvol[0], subvol[1], subvol[2], subvol[3]) representing the sub-volume extracted from the input image tensor.
+    Returns: - subvol (numpy.ndarray): A numpy array of shape (subvol[0], subvol[1], subvol[2], subvol[3])
+    representing the sub-volume extracted from the input image tensor.
     """
-
-    # Initialize features and labels with `None`
-    sample = np.empty([subvol[0], subvol[1], subvol[2], subvol[3]], dtype='float32')
 
     # randomly sample sub-volume by sampling the corner voxel
     start_x = np.random.randint(image.shape[0] - subvol[0] + 1)
@@ -324,14 +350,9 @@ def get_shape(arr):
     
     Returns:
         list: A list containing the size of each dimension of the nested list.
-    
-    Example:
-        >>> arr = [[[1, 2], [3, 4]], [[5, 6], [7, 8]], [[9, 10], [11, 12]]]
-        >>> get_shape(arr)
-        [3, 2, 2]
     """
     res = []  # create an empty list to store the shape
-    while isinstance((arr), list):  # loop until the elements in arr are no longer lists
+    while isinstance(arr, list):  # loop until the elements in arr are no longer lists
         res.append(len(arr))  # add the length of arr to the shape list
         arr = arr[0]  # set arr to the first element of arr
     return res  # return the shape list

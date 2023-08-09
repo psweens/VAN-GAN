@@ -172,19 +172,19 @@ class DataPreprocessor:
 
         if not self.tiff_size == self.target_size and self.resize:
             stack = (resize_volume(stack, self.target_size)).astype('float32')
-            if self.partition_id == 'B':
+            if self.partition_id == 'S':
                 stack[stack < 0.] = 0.0
                 stack[stack > 255.] = 255
 
         stack = min_max_norm(stack)
-        if self.partition_id == 'B':
+        if self.partition_id == 'S':
             mode, _ = stats.mode(stack, axis=None)
             if mode == 1:
                 stack -= 1.
                 stack = abs(stack)
         stack = (stack - 0.5) / 0.5
 
-        if self.partition_id == 'B':
+        if self.partition_id == 'S':
             stack[stack < 0.] = -1.0
             stack[stack >= 0.] = 1.0
 
@@ -202,7 +202,7 @@ class DataPreprocessor:
                         sk.imsave(arr_out, (np.transpose(stack, (2, 1, 0)) * 127.5 + 127.5).astype('uint8'),
                                   bigtiff=False, check_contrast=False)
 
-            if self.partition_id == 'B':
+            if self.partition_id == 'S':
                 np.save(os.path.join(self.main_dir, label + self.partition_id, file),
                         np.expand_dims(stack, axis=self.DIMENSIONS))
             else:

@@ -164,12 +164,15 @@ print('*** Generating datasets for model ***')
 
 
 # Define function to preprocess imaging domain image on the fly (otf)
-# Min/max normalisation and rescaling to [-1,1] shown here
+# Min/max batch normalisation and rescaling to [-1,1] shown here
 @tf.function
-def process_imaging_otf(image):
-    return rescale_arr_tf(
-        min_max_norm_tf(image)
-    )
+def process_imaging_otf(tensor):
+    # Calculate the maximum and minimum values along the batch dimension
+    max_vals = tf.reduce_max(tensor, axis=(1, 2, 3, 4), keepdims=True)
+    min_vals = tf.reduce_min(tensor, axis=(1, 2, 3, 4), keepdims=True)
+
+    # Normalize the tensor between -1 and 1
+    return 2.0 * (tensor - min_vals) / (max_vals - min_vals) - 1.0
 
 
 # Define dataset class
@@ -197,8 +200,8 @@ vangan_model = VanGan(args,
 ''' DEFINE CUSTOM CALLBACK '''
 plotter = GanMonitor(args,
                      dataset=getDataset,
-                     Alist=imaging_data.partition['validation'],
-                     Blist=synth_data.partition['validation'],
+                     imaging_val_data=imaging_data.partition['validation'],
+                     segmentation_val_data=synth_data.partition['validation'],
                      process_imaging_domain=process_imaging_otf
                      )
 
