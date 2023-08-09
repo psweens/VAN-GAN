@@ -1,17 +1,37 @@
-# VAN-GAN: Vessel Segmentation Generative Adversarial Network
+# VAN-GAN: An Unsupervised Deep Learning Tool for Vascular Network Segmentation
+
+***VAN-GAN offers an accessible and efficient solution for the segmentation of vascular networks from 3D images without the need for human-annotated labels.***
 
 ## Introduction
-Innovations in imaging hardware have led to a revolution in our ability to visualise vascular networks in 3D at high resolution. The segmentation of microvascular networks from these 3D image volumes and interpretation of their meaning in the context of physiological and pathological processes unfortunately remains a time consuming and error-prone task. Deep learning has the potential to solve this problem, but current supervised analysis frameworks require human-annotated ground truth labels. To overcome these limitations, we present an unsupervised image-to-image translation deep learning model called the ***Vessel Segmentation Generative Adversarial Network (VAN-GAN)***. VAN-GAN integrates synthetic blood vessel networks that closely resemble real-life anatomy into its training process and learns to replicate the underlying physics of an imaging system in order to learn how to segment vasculature from 3D biomedical images. By leveraging synthetic data to reduce the reliance on manual labelling, VAN-GAN lower the barriers to entry for high-quality blood vessel segmentation to benefit imaging studies of vascular structure and function.
+
+Recent advancements in imaging hardware have opened up new possibilities for visualising 3D vascular networks with exceptional resolution. However, the task of segmenting microvascular networks from these 3D image volumes and interpreting their physiological and pathological significance remains a time-consuming and error-prone process. Deep learning holds great potential in addressing this challenge, but existing supervised frameworks rely on labor-intensive human-annotated ground truth labels. To overcome these limitations, we introduce ***Vessel Segmentation Generative Adversarial Network (VAN-GAN)***, an unsupervised image-to-image translation deep learning model.
+
+
+
+<figure style="text-align:center;">
+  <img src="VANGAN_Overview.jpg" alt="Alt Text">
+  <figcaption style="font-style: italic; font-size: 0.8em;">(A) VAN-GAN performs unsupervised training to learn the mappings between the imaging and segmentation domains to train a generator which can segment 3D vasculatures from biomedical image volumes. (B) The two domains are define as: 1) Imaging domain, the dataset of real biomedical image volumes; and 2) segmentation domain, the dataset of computer-generated 3D vascular labels.
+</figcaption>
+</figure>
+
 
 ## Methodology
-This Python package utilises image-to-image translation to segment 3D biomedical image volumes of vascular networks. Our unsupervised deep learning framework builds upon [CycleGAN](https://arxiv.org/abs/1703.10593) in several ways:
-* Extend the design to 3D for image volume generation using 3D convolutions.
-* Utilise a deep residual U-Net architecture for generators.
-* Apply random Gaussian noise to discriminator inputs and convolution layers for improved training stability and regularisation.
-* Use a modified objective loss function:
-  * Introduce a structure similarity reconstruction loss between real and cycled biomedical image volumes.
-  * Introduce a [spatial and topological constraint](https://arxiv.org/abs/2003.07311) between real and cycled segmentation labels.
-  * Exclude identity loss.
+
+VAN-GAN is a Python package that employs image-to-image translation techniques to segment 3D biomedical image volumes of vascular networks. Our framework builds upon the principles of CycleGAN with several extensions tailored for vascular network segmentation:
+
+* **3D Extension**: We extend the design to support 3D image volume generation using 3D convolutions, enabling accurate segmentation of vascular structures in three dimensions.
+* **Deep Residual U-Net Architecture**: We leverage a deep residual U-Net architecture for generators, providing a powerful tool for capturing fine details and improving segmentation performance.
+* **Training Stability and Regularisation**: We introduce random Gaussian noise to discriminator inputs and convolution layers to enhance training stability and regularisation, leading to more robust and reliable segmentation results.
+* **Modified Objective Loss Function**: The loss function is enhanced to include the following components:
+  * **Structure Similarity Reconstruction Loss**: This loss fosters similarity between real and cycled biomedical image volumes, aiding in preserving essential features during image-to-image translation. 
+  * **Spatial and Topological Constraint**: A constraint inspired by spatial and topological considerations is introduced to align real and cycled segmentation labels, further refining the segmentation accuracy. 
+  * **Exclusion of Identity Loss**: The identity loss component is excluded from the objective, streamlining the segmentation process and avoiding unnecessary complexities. 
+* **Synthetic 3D Images**: VAN-GAN leverages synthetic blood vessel networks closely resembling real-life anatomy during training, effectively removing the reliance on manual labelling.
+
+<figure style="text-align:center;">
+  <img src="Generator_Labelling_Architecture.jpg" alt="Alt Text">
+  <figcaption style="font-style: italic; font-size: 0.8em;">The VAN-GAN model trains a 3D deep residual U-Net architecture to segment 3D images of real blood vessel networks. An example of a tumour vasculature imaged using mesoscopic photoacoustic imaging is shown where the image is provided as input and the 3D segmentation mask predicted as output.</figcaption>
+</figure>
 
 ## Installation
 To install the package from source, download the latest release on the VAN-GAN repository or run the following in a terminal window:
@@ -23,7 +43,7 @@ Please ensure that cudatoolkit, cudnn and Tensorflow are correctly installed as 
 
 Tensorflow and the remaining Python packages below can be installed in a [_conda_](https://www.anaconda.com/download/) environment.
 
-The remaining required Python packages can be install using _pip_ in a terminal window:
+The remaining required Python packages can be installed using _pip_ in a terminal window:
 ```bash
 pip install opencv-python scikit-image tqdm tensorflow_addons tensorflow-mri joblib matplotlib
 ```
@@ -36,7 +56,6 @@ VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the followi
 * Scikit-image 0.20.0
 * [tqdm 4.65.0](https://github.com/tqdm/tqdm)
 * [Tensorflow-addons 0.20.0](https://www.tensorflow.org/addons)
-* [Tensorflow-mri 0.22.0](https://github.com/mrphys/tensorflow-mri)
 * Joblib 1.2.0
 * Matplotlib 3.7.1
 

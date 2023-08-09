@@ -4,11 +4,12 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
+from utils import get_vacuum
 
 
 class DatasetGen:
     def __init__(self, args, imaging_domain_data, seg_domain_data, strategy: tf.distribute.Strategy, otf_imaging=None):
-        ''' Setting shard policy for distributed dataset '''
+        """ Setting shard policy for distributed dataset """
         options = tf.data.Options()
         options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
 
@@ -16,80 +17,100 @@ class DatasetGen:
         if args.DIMENSIONS == 2:
             self.imaging_output_shapes = (None, None, args.CHANNELS)
             self.segmentation_output_shapes = (None, None, 1)
-            self.imaging_patch_shape = (args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.CHANNELS)
+            self.imaging_patch_shape = (args.GLOBAL_BATCH_SIZE,
+                                        args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.CHANNELS)
             self.segmentation_patch_shape = (args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], 1)
         else:
             self.imaging_output_shapes = (None, None, None, args.CHANNELS)
             self.segmentation_output_shapes = (None, None, None, 1)
-            self.imaging_patch_shape = (
-            args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2], args.CHANNELS)
+            self.imaging_patch_shape = (args.GLOBAL_BATCH_SIZE,
+                                        args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2],
+                                        args.CHANNELS)
             self.segmentation_patch_shape = (
-            args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2], 1)
+                args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2], 1)
 
         self.strategy = strategy
-        self.pathA = imaging_domain_data
-        self.pathB = seg_domain_data
+        self.imaging_paths = imaging_domain_data
+        self.segmentation_paths = seg_domain_data
         self.args = args
         self.otf_imaging = otf_imaging
         self.IMAGE_THRESH = 0.5
         self.SEG_THRESH = 0.8
+        self.GLOBAL_BATCH_SIZE = args.GLOBAL_BATCH_SIZE
+        self.SEGMENTATION_DIM = args.TARG_SYNTH_IMG_SIZE
 
         ''' Create datasets '''
         with self.strategy.scope():
-            self.imaging_train_dataset = tf.data.Dataset.from_generator(lambda: self.datagenA('training'),
+
+            ''' Create imaging train dataset '''
+            self.imaging_train_dataset = tf.data.Dataset.from_generator(lambda: self.imaging_datagen('training'),
                                                                         output_types=tf.float32,
                                                                         output_shapes=self.imaging_output_shapes)
-            self.imaging_train_dataset = self.imaging_train_dataset.map(self.processImagingDomain,
-                                                                        num_parallel_calls=tf.data.AUTOTUNE)
             self.imaging_train_dataset = self.imaging_train_dataset.repeat()
             self.imaging_train_dataset = self.imaging_train_dataset.with_options(options)
+            self.imaging_train_dataset = self.imaging_train_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
+            self.imaging_train_dataset = self.imaging_train_dataset.map(self.process_imaging_domain,
+                                                                        num_parallel_calls=tf.data.AUTOTUNE)
 
-            self.segmentation_train_dataset = tf.data.Dataset.from_generator(lambda: self.datagenB('training'),
-                                                                             output_types=tf.float32,
-                                                                             output_shapes=self.segmentation_output_shapes)
-            self.segmentation_train_dataset = self.segmentation_train_dataset.map(self.processSegDomain,
+            ''' Create imaging validation dataset '''
+            self.imaging_val_dataset = tf.data.Dataset.from_generator(lambda: self.imaging_datagen('validation'),
+                                                                      output_types=tf.float32,
+                                                                      output_shapes=self.imaging_output_shapes)
+            self.imaging_val_dataset = self.imaging_val_dataset.repeat()
+            self.imaging_val_dataset = self.imaging_val_dataset.with_options(options)
+            self.imaging_val_dataset = self.imaging_val_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
+            self.imaging_val_dataset = self.imaging_val_dataset.map(map_func=self.process_imaging_domain,
+                                                                    num_parallel_calls=tf.data.AUTOTUNE)
+
+            ''' Create segmentation train dataset '''
+            self.segmentation_train_dataset = tf.data.Dataset.from_generator(
+                lambda: self.segmentation_datagen('training'),
+                output_types=tf.float32,
+                output_shapes=self.segmentation_output_shapes)
+            self.segmentation_train_dataset = self.segmentation_train_dataset.map(self.process_seg_domain,
                                                                                   num_parallel_calls=tf.data.AUTOTUNE)
             self.segmentation_train_dataset = self.segmentation_train_dataset.repeat()
             self.segmentation_train_dataset = self.segmentation_train_dataset.with_options(options)
+            self.segmentation_train_dataset = self.segmentation_train_dataset.batch(self.GLOBAL_BATCH_SIZE,
+                                                                                    drop_remainder=True)
 
-            self.imaging_val_dataset = tf.data.Dataset.from_generator(lambda: self.datagenA('validation'),
-                                                                      output_types=tf.float32,
-                                                                      output_shapes=self.imaging_output_shapes)
-            self.imaging_val_dataset = self.imaging_val_dataset.map(map_func=self.processImagingDomain,
-                                                                    num_parallel_calls=tf.data.AUTOTUNE)
-            self.imaging_val_dataset = self.imaging_val_dataset.repeat()
-            self.imaging_val_dataset = self.imaging_val_dataset.with_options(options)
-
-            self.segmentation_val_dataset = tf.data.Dataset.from_generator(lambda: self.datagenB('validation'),
-                                                                           output_types=tf.float32,
-                                                                           output_shapes=self.segmentation_output_shapes)
-            self.segmentation_val_dataset = self.segmentation_val_dataset.map(map_func=self.processSegDomain,
+            ''' Create segmentation validation dataset '''
+            self.segmentation_val_dataset = tf.data.Dataset.from_generator(
+                lambda: self.segmentation_datagen('validation'),
+                output_types=tf.float32,
+                output_shapes=self.segmentation_output_shapes)
+            self.segmentation_val_dataset = self.segmentation_val_dataset.map(map_func=self.process_seg_domain,
                                                                               num_parallel_calls=tf.data.AUTOTUNE)
             self.segmentation_val_dataset = self.segmentation_val_dataset.repeat()
             self.segmentation_val_dataset = self.segmentation_val_dataset.with_options(options)
+            self.segmentation_val_dataset = self.segmentation_val_dataset.batch(self.GLOBAL_BATCH_SIZE,
+                                                                                drop_remainder=True)
 
-            self.plotSampleDataset()
+            ''' Create validation dataset for full images (no sample cropping) '''
+            self.imaging_val_full_vol_data = tf.data.Dataset.from_generator(self.imaging_val_datagen,
+                                                                            output_types=(tf.float32, tf.int8))
+            self.segmentation_val_full_vol_data = tf.data.Dataset.from_generator(self.segmentation_val_datagen,
+                                                                                 output_types=(tf.float32, tf.int8))
 
-            self.valFullDatasetA = tf.data.Dataset.from_generator(self.valDatagenA, output_types=(tf.float32, tf.int8))
-            self.valFullDatasetB = tf.data.Dataset.from_generator(self.valDatagenB, output_types=(tf.float32, tf.int8))
+            ''' Plot samples from training dataset '''
+            self.plot_sample_dataset()
 
+            ''' Zip training and validation datasets & setup to distribute across GPUs '''
             self.train_dataset = tf.data.Dataset.zip(
-                (self.imaging_train_dataset.batch(args.GLOBAL_BATCH_SIZE, drop_remainder=True),
-                 self.segmentation_train_dataset.batch(args.GLOBAL_BATCH_SIZE, drop_remainder=True))).prefetch(
-                tf.data.AUTOTUNE)
+                (self.imaging_train_dataset,
+                 self.segmentation_train_dataset)).prefetch(tf.data.AUTOTUNE)
             self.val_dataset = tf.data.Dataset.zip(
-                (self.imaging_val_dataset.batch(args.GLOBAL_BATCH_SIZE, drop_remainder=True),
-                 self.segmentation_val_dataset.batch(args.GLOBAL_BATCH_SIZE, drop_remainder=True))).prefetch(
-                tf.data.AUTOTUNE)
+                (self.imaging_val_dataset,
+                 self.segmentation_val_dataset)).prefetch(tf.data.AUTOTUNE)
 
             self.train_dataset = self.strategy.experimental_distribute_dataset(self.train_dataset)
             self.val_dataset = self.strategy.experimental_distribute_dataset(self.val_dataset)
 
     ''' Functions to gather imaging subvolumes '''
 
-    def datagenA(self, typ='training'):
+    def imaging_datagen(self, typ='training'):
         """
-        Generates a batch of data from the pathA directory.
+        Generates a batch of data from the imaging_paths directory.
 
         Args:
         - typ (str): The type of data to generate, either 'training' or 'validation'. Default is 'training'.
@@ -97,26 +118,25 @@ class DatasetGen:
         Returns:
         - tensor: A tensor of shape [batch_size, height, width, channels] containing the batch of images.
         """
-        iterA = 0
-        datasetA = self.pathA[typ]
-        np.random.shuffle(datasetA)
+        iter_i = 0
+        img_dataset = self.imaging_paths[typ]
+        np.random.shuffle(img_dataset)
         while True:
-            if iterA >= math.floor(len(datasetA) // self.args.GLOBAL_BATCH_SIZE):
-                iterA = 0
-                np.random.shuffle(datasetA)
+            if iter_i >= math.floor(len(img_dataset) // self.args.GLOBAL_BATCH_SIZE):
+                iter_i = 0
+                np.random.shuffle(img_dataset)
 
-            file = datasetA[iterA * self.args.GLOBAL_BATCH_SIZE:(iterA + 1) * self.args.GLOBAL_BATCH_SIZE]
+            file = img_dataset[iter_i * self.args.GLOBAL_BATCH_SIZE:(iter_i + 1) * self.args.GLOBAL_BATCH_SIZE]
 
             # Load batch of full size images
             for idx, filename in enumerate(file):
-                yield tf.convert_to_tensor(np.rot90(np.load(filename),
-                                                    np.random.choice([-1, 0, 1])), dtype=tf.float32)
+                yield tf.convert_to_tensor(np.rot90(np.load(filename), np.random.choice([-1, 0, 1])), dtype=tf.float32)
 
-            iterA += 1
+            iter_i += 1
 
-    def datagenB(self, typ='training'):
+    def segmentation_datagen(self, typ='training'):
         """
-        Generates a batch of data from the pathB directory.
+        Generates a batch of data from the segmentation_paths directory.
 
         Args:
         - typ (str): The type of data to generate, either 'training' or 'validation'. Default is 'training'.
@@ -124,59 +144,106 @@ class DatasetGen:
         Returns:
         - tensor: A tensor of shape [batch_size, height, width, channels] containing the batch of images.
         """
-        iterB = 0
-        datasetB = self.pathB[typ]
-        np.random.shuffle(datasetB)
+        iter_s = 0
+        seg_dataset = self.segmentation_paths[typ]
+        np.random.shuffle(seg_dataset)
         while True:
-            if iterB >= math.floor(len(datasetB) // self.args.GLOBAL_BATCH_SIZE):
-                iterB = 0
-                np.random.shuffle(datasetB)
+            if iter_s >= math.floor(len(seg_dataset) // self.args.GLOBAL_BATCH_SIZE):
+                iter_s = 0
+                np.random.shuffle(seg_dataset)
 
-            file = datasetB[iterB * self.args.GLOBAL_BATCH_SIZE:(iterB + 1) * self.args.GLOBAL_BATCH_SIZE]
+            file = seg_dataset[iter_s * self.args.GLOBAL_BATCH_SIZE:(iter_s + 1) * self.args.GLOBAL_BATCH_SIZE]
 
             # Load batch of full size images
             for idx, filename in enumerate(file):
                 yield tf.convert_to_tensor(np.rot90(np.load(filename),
                                                     np.random.choice([-1, 0, 1])), dtype=tf.float32)
 
-            iterB += 1
+            iter_s += 1
 
-    def valDatagenA(self):
+    def imaging_val_datagen(self):
         while True:
-            i = random.randint(0, self.pathA['validation'].shape[0] - 1)
-            yield tf.convert_to_tensor(np.load(self.pathA['validation'][i]), dtype=tf.float32), i
+            i = random.randint(0, self.imaging_paths['validation'].shape[0] - 1)
+            yield tf.convert_to_tensor(np.load(self.imaging_paths['validation'][i]), dtype=tf.float32), i
 
-    def valDatagenB(self):
+    def segmentation_val_datagen(self):
         while True:
-            i = random.randint(0, self.pathB['validation'].shape[0] - 1)
-            yield tf.convert_to_tensor(np.load(self.pathB['validation'][i]), dtype=tf.float32), i
+            i = random.randint(0, self.segmentation_paths['validation'].shape[0] - 1)
+            yield tf.convert_to_tensor(np.load(self.segmentation_paths['validation'][i]), dtype=tf.float32), i
 
     ''' Functions for data preprocessing '''
 
-    def body(self, arr, image):
-        return [tf.image.random_crop(image, size=self.segmentation_patch_shape), image]
-
-    def imagingCondition(self, arr, image):
-        return tf.math.less(tf.math.reduce_max(arr), self.IMAGE_THRESH)
-
-    def segmentationCondition(self, arr, image):
-        return tf.math.less(tf.math.reduce_max(arr), self.SEG_THRESH)
-
-    def processImagingDomain(self, image):
-        ''' Standardizes image data and creates subvolumes '''
+    def process_imaging_domain(self, image):
+        """ Standardizes image data and creates subvolumes """
         subvol = tf.image.random_crop(image, size=self.imaging_patch_shape)
         if self.otf_imaging is not None:
             subvol = self.otf_imaging(subvol)
         return subvol
 
-    def processSegDomain(self, image):
-        arr = tf.image.random_crop(value=image, size=self.segmentation_patch_shape)
-        arr, _ = tf.while_loop(self.segmentationCondition, self.body, [arr, image], maximum_iterations=10)
-        return arr
-
-    def plotSampleDataset(self):
+    @tf.function
+    def process_seg_domain(self, image):
         """
-        Plots a sample of the input datasets A and B along with their histograms. 
+        Randomly crops the input_mask around a randomly selected feature voxel.
+
+        Args:
+            self:
+            image (tf.Tensor): The 4D input segmentation mask (depth, width, length, channel).
+                                   Features are labeled as 1, background as -1.
+
+        Returns:
+            cropped_mask (tf.Tensor): The randomly cropped segmentation mask.
+        """
+
+        # Get the indices of feature voxels
+        feature_indices = tf.where(tf.equal(image, 1))
+
+        # Randomly select a feature voxel
+        random_feature_index = tf.cast(tf.random.shuffle(feature_indices)[0], tf.int32)
+
+        # Calculate the cropping window based on the selected feature voxel
+        crop_start_depth = random_feature_index[0] - self.segmentation_patch_shape[0] // 2
+        crop_start_width = random_feature_index[1] - self.segmentation_patch_shape[1] // 2
+        crop_start_length = random_feature_index[2] - self.segmentation_patch_shape[2] // 2
+
+        # Calculate crop_end coordinates symmetrically based on image dimensions
+        crop_end_depth = crop_start_depth + self.segmentation_patch_shape[0]
+        crop_end_width = crop_start_width + self.segmentation_patch_shape[1]
+        crop_end_length = crop_start_length + self.segmentation_patch_shape[2]
+
+        image_shape = tf.shape(image)
+
+        # Adjust cropping symmetrically if necessary
+        if crop_start_depth < 0:
+            crop_end_depth -= crop_start_depth
+            crop_start_depth = 0
+        elif crop_end_depth > image_shape[0]:
+            crop_start_depth -= crop_end_depth - image_shape[0]
+            crop_end_depth = image_shape[0]
+
+        if crop_start_width < 0:
+            crop_end_width -= crop_start_width
+            crop_start_width = 0
+        elif crop_end_width > image_shape[1]:
+            crop_start_width -= crop_end_width - image_shape[1]
+            crop_end_width = image_shape[1]
+
+        if crop_start_length < 0:
+            crop_end_length -= crop_start_length
+            crop_start_length = 0
+        elif crop_end_length > image_shape[2]:
+            crop_start_length -= crop_end_length - image_shape[2]
+            crop_end_length = image_shape[2]
+
+        # Crop the tensor
+        cropped_mask = image[crop_start_depth:crop_end_depth,
+                       crop_start_width:crop_end_width,
+                       crop_start_length:crop_end_length, :]
+
+        return cropped_mask
+
+    def plot_sample_dataset(self):
+        """
+        Plots a sample of the input datasets 'Imaging' and 'Segmentation' along with their histograms.
         The function saves a 3D TIFF file of the input data.
 
         Args:
@@ -199,38 +266,37 @@ class DatasetGen:
         fig.subplots_adjust(hspace=0.5)
         for i, samples in enumerate(zip(self.imaging_train_dataset.take(1), self.segmentation_train_dataset.take(1))):
 
-            dA = samples[0].numpy()
-            dB = samples[1].numpy()
-
+            dI = samples[0][0].numpy()
+            dS = samples[1][0].numpy()
             if self.args.DIMENSIONS == 3:
                 ''' Save 3D images '''
-                io.imsave("./GANMonitor/Test_Input_A.tiff",
-                          np.transpose(dA, (2, 0, 1, 3)),
+                io.imsave("./GANMonitor/Imaging_Test_Input.tiff",
+                          np.transpose(dI, (2, 0, 1, 3)),
                           bigtiff=False, check_contrast=False)
 
-                io.imsave("./GANMonitor/Test_Input_B.tiff",
-                          np.transpose(dB, (2, 0, 1, 3)),
+                io.imsave("./GANMonitor/Segmentation_Test_Input.tiff",
+                          np.transpose(dS, (2, 0, 1, 3)),
                           bigtiff=False, check_contrast=False)
 
             if self.args.DIMENSIONS == 2:
-                showA = (dA * 127.5 + 127.5).astype('uint8')
-                showB = (dB * 127.5 + 127.5).astype('uint8')
-                axs[0, 0].imshow(showA, cmap='gray')
-                axs[0, 1].imshow(showB, cmap='gray')
+                showI = (dI * 127.5 + 127.5).astype('uint8')
+                showS = (dS * 127.5 + 127.5).astype('uint8')
+                axs[0, 0].imshow(showI, cmap='gray')
+                axs[0, 1].imshow(showS, cmap='gray')
             else:
                 for j in range(0, nfig):
-                    showA = (dA[:, :, j * int(self.args.SUBVOL_PATCH_SIZE[2] / nfig), ])
-                    showB = (dB[:, :, j * int(self.args.SUBVOL_PATCH_SIZE[2] / nfig), ])
-                    axs[j, 0].imshow(showA, cmap='gray')
-                    axs[j, 1].imshow(showB, cmap='gray')
+                    showI = (dI[:, :, j * int(self.args.SUBVOL_PATCH_SIZE[2] / nfig), ])
+                    showS = (dS[:, :, j * int(self.args.SUBVOL_PATCH_SIZE[2] / nfig), ])
+                    axs[j, 0].imshow(showI, cmap='gray')
+                    axs[j, 1].imshow(showS, cmap='gray')
 
             ''' Include histograms '''
-            axs[nfig, 0].hist(dA.ravel(), bins=256, range=(np.amin(dA), np.amax(dA)), fc='k', ec='k', density=True)
-            axs[nfig, 1].hist(dB.ravel(), bins=256, range=(np.amin(dB), np.amax(dB)), fc='k', ec='k', density=True)
+            axs[nfig, 0].hist(dI.ravel(), bins=256, range=(np.amin(dI), np.amax(dI)), fc='k', ec='k', density=True)
+            axs[nfig, 1].hist(dS.ravel(), bins=256, range=(np.amin(dS), np.amax(dS)), fc='k', ec='k', density=True)
 
             # Set axis labels
-            axs[0, 0].set_title('Dataset A Example (XY Slices)')
-            axs[0, 1].set_title('Dataset B Example (XY Slices)')
+            axs[0, 0].set_title('Imaging Dataset Example (XY Slices)')
+            axs[0, 1].set_title('Segmentation Dataset Example (XY Slices)')
             axs[nfig, 0].set_ylabel('Voxel Frequency')
             plt.show(block=False)
             plt.close()
@@ -238,14 +304,14 @@ class DatasetGen:
             if self.args.DIMENSIONS == 3:
                 _, axs = plt.subplots(nfig, 2, figsize=(10, 15))
                 for j in range(0, nfig):
-                    showA = dA[:, j * int(self.args.SUBVOL_PATCH_SIZE[1] / nfig), :, 0]
-                    showB = dB[:, j * int(self.args.SUBVOL_PATCH_SIZE[1] / nfig), :self.args.SUBVOL_PATCH_SIZE[2] - 1,
+                    showI = dI[:, j * int(self.args.SUBVOL_PATCH_SIZE[1] / nfig), :, 0]
+                    showS = dS[:, j * int(self.args.SUBVOL_PATCH_SIZE[1] / nfig), :self.args.SUBVOL_PATCH_SIZE[2] - 1,
                             0]
-                    axs[j, 0].imshow(showA, cmap='gray')
-                    axs[j, 1].imshow(showB, cmap='gray')
+                    axs[j, 0].imshow(showI, cmap='gray')
+                    axs[j, 1].imshow(showS, cmap='gray')
 
             # Set axis labels
-            axs[0, 0].set_title('Dataset A Example (YZ Slices)')
-            axs[0, 1].set_title('Dataset B Example (YZ Slices)')
+            axs[0, 0].set_title('Imaging Dataset Example (YZ Slices)')
+            axs[0, 1].set_title('Segmentation Dataset Example (YZ Slices)')
             plt.show(block=False)
             plt.close()

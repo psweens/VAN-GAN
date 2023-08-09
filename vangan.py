@@ -326,18 +326,18 @@ class VanGan:
         total_loss_S = gen_SI_loss + cycle_loss_S + reconstruction_loss_I  # + id_IS_loss
 
         result.update({
-            'total_AB_loss': total_loss_I,
-            'total_BA_loss': total_loss_S,
-            'D_A_loss': disc_I_loss,
-            'D_B_loss': disc_S_loss,
+            'total_IS_loss': total_loss_I,
+            'total_SI_loss': total_loss_S,
+            'D_I_loss': disc_I_loss,
+            'D_S_loss': disc_S_loss,
             'gen_IS_loss': gen_IS_loss,
             'gen_SI_loss': gen_SI_loss,
-            'cycle_gen_AB_loss': cycle_loss_I,
-            'cycle_gen_BA_loss': cycle_loss_S,
+            'cycle_gen_IS_loss': cycle_loss_I,
+            'cycle_gen_SI_loss': cycle_loss_S,
             'seg_loss': seg_loss,
             'reconstruction_loss_I': reconstruction_loss_I,
-            # 'identity_AB': id_IS_loss,
-            # 'identity_BA': id_SI_loss
+            # 'identity_IS': id_IS_loss,
+            # 'identity_SI': id_SI_loss
         })
 
         return result, total_loss_I, total_loss_S, disc_I_loss, disc_S_loss, fake_I, fake_S
