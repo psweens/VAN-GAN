@@ -1,15 +1,23 @@
 import random
 import math
+import os
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
-from utils import get_vacuum
+from utils import get_vacuum, fast_clahe, clahe_3d
 
 
 class DatasetGen:
-    def __init__(self, args, imaging_domain_data, seg_domain_data, strategy: tf.distribute.Strategy, otf_imaging=None):
+    def __init__(self,
+                 args,
+                 imaging_domain_data,
+                 seg_domain_data,
+                 strategy: tf.distribute.Strategy,
+                 otf_imaging=None,
+                 semi_supervised_dir=None):
         """ Setting shard policy for distributed dataset """
+        self.feature_indices = None
         options = tf.data.Options()
         options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
 
@@ -17,14 +25,12 @@ class DatasetGen:
         if args.DIMENSIONS == 2:
             self.imaging_output_shapes = (None, None, args.CHANNELS)
             self.segmentation_output_shapes = (None, None, 1)
-            self.imaging_patch_shape = (args.GLOBAL_BATCH_SIZE,
-                                        args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.CHANNELS)
+            self.imaging_patch_shape = (args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.CHANNELS)
             self.segmentation_patch_shape = (args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], 1)
         else:
             self.imaging_output_shapes = (None, None, None, args.CHANNELS)
             self.segmentation_output_shapes = (None, None, None, 1)
-            self.imaging_patch_shape = (args.GLOBAL_BATCH_SIZE,
-                                        args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2],
+            self.imaging_patch_shape = (args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2],
                                         args.CHANNELS)
             self.segmentation_patch_shape = (
                 args.SUBVOL_PATCH_SIZE[0], args.SUBVOL_PATCH_SIZE[1], args.SUBVOL_PATCH_SIZE[2], 1)
@@ -34,6 +40,11 @@ class DatasetGen:
         self.segmentation_paths = seg_domain_data
         self.args = args
         self.otf_imaging = otf_imaging
+        if semi_supervised_dir is not None:
+            self.semi_supervised = True
+            self.semi_supervised_dir = semi_supervised_dir
+        else:
+            self.semi_supervised = False
         self.IMAGE_THRESH = 0.5
         self.SEG_THRESH = 0.8
         self.GLOBAL_BATCH_SIZE = args.GLOBAL_BATCH_SIZE
@@ -48,9 +59,12 @@ class DatasetGen:
                                                                         output_shapes=self.imaging_output_shapes)
             self.imaging_train_dataset = self.imaging_train_dataset.repeat()
             self.imaging_train_dataset = self.imaging_train_dataset.with_options(options)
-            self.imaging_train_dataset = self.imaging_train_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
             self.imaging_train_dataset = self.imaging_train_dataset.map(self.process_imaging_domain,
                                                                         num_parallel_calls=tf.data.AUTOTUNE)
+            self.imaging_train_dataset = self.imaging_train_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
+            if self.otf_imaging is not None:
+                self.imaging_train_dataset = self.imaging_train_dataset.map(self.otf_imaging,
+                                                                            num_parallel_calls=tf.data.AUTOTUNE)
 
             ''' Create imaging validation dataset '''
             self.imaging_val_dataset = tf.data.Dataset.from_generator(lambda: self.imaging_datagen('validation'),
@@ -58,9 +72,12 @@ class DatasetGen:
                                                                       output_shapes=self.imaging_output_shapes)
             self.imaging_val_dataset = self.imaging_val_dataset.repeat()
             self.imaging_val_dataset = self.imaging_val_dataset.with_options(options)
-            self.imaging_val_dataset = self.imaging_val_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
-            self.imaging_val_dataset = self.imaging_val_dataset.map(map_func=self.process_imaging_domain,
+            self.imaging_val_dataset = self.imaging_val_dataset.map(self.process_imaging_domain,
                                                                     num_parallel_calls=tf.data.AUTOTUNE)
+            self.imaging_val_dataset = self.imaging_val_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
+            if self.otf_imaging is not None:
+                self.imaging_val_dataset = self.imaging_val_dataset.map(self.otf_imaging,
+                                                                        num_parallel_calls=tf.data.AUTOTUNE)
 
             ''' Create segmentation train dataset '''
             self.segmentation_train_dataset = tf.data.Dataset.from_generator(
@@ -126,11 +143,17 @@ class DatasetGen:
                 iter_i = 0
                 np.random.shuffle(img_dataset)
 
-            file = img_dataset[iter_i * self.args.GLOBAL_BATCH_SIZE:(iter_i + 1) * self.args.GLOBAL_BATCH_SIZE]
+            start_idx = iter_i * self.args.GLOBAL_BATCH_SIZE
+            end_idx = (iter_i + 1) * self.args.GLOBAL_BATCH_SIZE
+
+            if end_idx > len(img_dataset):
+                end_idx = len(img_dataset)
+
+            file = img_dataset[start_idx:end_idx]
 
             # Load batch of full size images
             for idx, filename in enumerate(file):
-                yield tf.convert_to_tensor(np.rot90(np.load(filename), np.random.choice([-1, 0, 1])), dtype=tf.float32)
+                yield tf.convert_to_tensor(np.load(filename), dtype=tf.float32)
 
             iter_i += 1
 
@@ -156,90 +179,101 @@ class DatasetGen:
 
             # Load batch of full size images
             for idx, filename in enumerate(file):
-                yield tf.convert_to_tensor(np.rot90(np.load(filename),
-                                                    np.random.choice([-1, 0, 1])), dtype=tf.float32)
+                if self.semi_supervised:
+                    ss_filename = os.path.join(self.semi_supervised_dir, os.path.basename(filename))
+                    yield tf.convert_to_tensor(np.concatenate((np.load(filename),
+                                                               np.load(ss_filename)),
+                                                              axis=0),
+                                               dtype=tf.float32)
+                else:
+                    yield tf.convert_to_tensor(np.load(filename), dtype=tf.float32)
 
             iter_s += 1
 
     def imaging_val_datagen(self):
         while True:
-            i = random.randint(0, self.imaging_paths['validation'].shape[0] - 1)
+            i = random.randint(0, len(self.imaging_paths['validation']) - 1)
             yield tf.convert_to_tensor(np.load(self.imaging_paths['validation'][i]), dtype=tf.float32), i
 
     def segmentation_val_datagen(self):
         while True:
-            i = random.randint(0, self.segmentation_paths['validation'].shape[0] - 1)
+            i = random.randint(0, len(self.segmentation_paths['validation']) - 1)
             yield tf.convert_to_tensor(np.load(self.segmentation_paths['validation'][i]), dtype=tf.float32), i
 
     ''' Functions for data preprocessing '''
 
+    @tf.function
+    def random_spatial_augmentation(self, image, max_rotation_angle=180, preserve_depth_orientation=False):
+        # Randomly flip horizontally
+        image = tf.cond(tf.random.uniform(()) > 0.5, lambda: tf.image.flip_left_right(image), lambda: image)
+
+        # Randomly flip vertically
+        image = tf.cond(tf.random.uniform(()) > 0.5, lambda: tf.image.flip_up_down(image), lambda: image)
+
+        if not preserve_depth_orientation:
+            # Randomly rotate the image
+            rotation_angle = tf.random.uniform((), minval=-max_rotation_angle, maxval=max_rotation_angle) * (
+                        math.pi / 180.0)
+            image = tf.image.rot90(image, k=tf.cast(rotation_angle // 90, dtype=tf.int32))
+
+        return image
+
     def process_imaging_domain(self, image):
         """ Standardizes image data and creates subvolumes """
-        subvol = tf.image.random_crop(image, size=self.imaging_patch_shape)
-        if self.otf_imaging is not None:
-            subvol = self.otf_imaging(subvol)
-        return subvol
+        # subvol = tf.image.random_crop(image, size=self.imaging_patch_shape)
+        # if self.otf_imaging is not None:
+        #     subvol = self.otf_imaging(subvol)
+        arr = tf.image.random_crop(image, size=self.imaging_patch_shape)
+        # arr = clahe_3d(arr)
+        return self.random_spatial_augmentation(arr, preserve_depth_orientation=True)
 
     @tf.function
     def process_seg_domain(self, image):
-        """
-        Randomly crops the input_mask around a randomly selected feature voxel.
+        # Initialize a loop counter
+        i = tf.constant(0)
 
-        Args:
-            self:
-            image (tf.Tensor): The 4D input segmentation mask (depth, width, length, channel).
-                                   Features are labeled as 1, background as -1.
+        # Define the maximum number of iterations
+        max_iterations = tf.constant(200)
 
-        Returns:
-            cropped_mask (tf.Tensor): The randomly cropped segmentation mask.
-        """
+        # Initialize arr
+        arr = tf.image.random_crop(image, size=self.segmentation_patch_shape)
 
-        # Get the indices of feature voxels
-        feature_indices = tf.where(tf.equal(image, 1))
+        # Start a while loop
+        def condition(i, arr):
+            return tf.math.logical_and(i < max_iterations, tf.math.reduce_max(arr) < self.SEG_THRESH)
 
-        # Randomly select a feature voxel
-        random_feature_index = tf.cast(tf.random.shuffle(feature_indices)[0], tf.int32)
+        def body(i, _):
+            # Generate a new random crop from the original image
+            new_arr = tf.image.random_crop(image, size=self.segmentation_patch_shape)
+            return i + 1, new_arr
 
-        # Calculate the cropping window based on the selected feature voxel
-        crop_start_depth = random_feature_index[0] - self.segmentation_patch_shape[0] // 2
-        crop_start_width = random_feature_index[1] - self.segmentation_patch_shape[1] // 2
-        crop_start_length = random_feature_index[2] - self.segmentation_patch_shape[2] // 2
+        _, arr = tf.while_loop(condition, body, [i, arr])
 
-        # Calculate crop_end coordinates symmetrically based on image dimensions
-        crop_end_depth = crop_start_depth + self.segmentation_patch_shape[0]
-        crop_end_width = crop_start_width + self.segmentation_patch_shape[1]
-        crop_end_length = crop_start_length + self.segmentation_patch_shape[2]
+        return self.random_spatial_augmentation(arr)
 
-        image_shape = tf.shape(image)
-
-        # Adjust cropping symmetrically if necessary
-        if crop_start_depth < 0:
-            crop_end_depth -= crop_start_depth
-            crop_start_depth = 0
-        elif crop_end_depth > image_shape[0]:
-            crop_start_depth -= crop_end_depth - image_shape[0]
-            crop_end_depth = image_shape[0]
-
-        if crop_start_width < 0:
-            crop_end_width -= crop_start_width
-            crop_start_width = 0
-        elif crop_end_width > image_shape[1]:
-            crop_start_width -= crop_end_width - image_shape[1]
-            crop_end_width = image_shape[1]
-
-        if crop_start_length < 0:
-            crop_end_length -= crop_start_length
-            crop_start_length = 0
-        elif crop_end_length > image_shape[2]:
-            crop_start_length -= crop_end_length - image_shape[2]
-            crop_end_length = image_shape[2]
-
-        # Crop the tensor
-        cropped_mask = image[crop_start_depth:crop_end_depth,
-                       crop_start_width:crop_end_width,
-                       crop_start_length:crop_end_length, :]
-
-        return cropped_mask
+    # @tf.function
+    # def process_imaging_domain(self, image):
+    #     # Initialize a loop counter
+    #     i = tf.constant(0)
+    #
+    #     # Define the maximum number of iterations
+    #     max_iterations = tf.constant(10)
+    #
+    #     # Initialize arr
+    #     arr = tf.image.random_crop(image, size=self.imaging_patch_shape)
+    #
+    #     # Start a while loop
+    #     def condition(i, arr):
+    #         return tf.math.logical_and(i < max_iterations, tf.math.reduce_max(arr) < 0.)
+    #
+    #     def body(i, _):
+    #         # Generate a new random crop from the original image
+    #         new_arr = tf.image.random_crop(image, size=self.imaging_patch_shape)
+    #         return i + 1, new_arr
+    #
+    #     _, arr = tf.while_loop(condition, body, [i, arr])
+    #
+    #     return self.random_spatial_augmentation(arr)
 
     def plot_sample_dataset(self):
         """
@@ -262,12 +296,18 @@ class DatasetGen:
         else:
             nfig = 6
 
-        fig, axs = plt.subplots(nfig + 1, 2, figsize=(10, 15))
+        if self.semi_supervised:
+            fig, axs = plt.subplots(nfig + 1, 3, figsize=(10, 15))
+        else:
+            fig, axs = plt.subplots(nfig + 1, 2, figsize=(10, 15))
         fig.subplots_adjust(hspace=0.5)
         for i, samples in enumerate(zip(self.imaging_train_dataset.take(1), self.segmentation_train_dataset.take(1))):
 
             dI = samples[0][0].numpy()
             dS = samples[1][0].numpy()
+            if self.semi_supervised:
+                dIS = dS[self.segmentation_patch_shape[0]:, ]
+                dS = dS[:self.segmentation_patch_shape[0], ]
             if self.args.DIMENSIONS == 3:
                 ''' Save 3D images '''
                 io.imsave("./GANMonitor/Imaging_Test_Input.tiff",
@@ -285,33 +325,50 @@ class DatasetGen:
                 axs[0, 1].imshow(showS, cmap='gray')
             else:
                 for j in range(0, nfig):
-                    showI = (dI[:, :, j * int(self.args.SUBVOL_PATCH_SIZE[2] / nfig), ])
-                    showS = (dS[:, :, j * int(self.args.SUBVOL_PATCH_SIZE[2] / nfig), ])
+                    showI = (dI[:, :, j * int(self.segmentation_patch_shape[2] / nfig), ])
+                    showS = (dS[:, :, j * int(self.segmentation_patch_shape[2] / nfig), ])
                     axs[j, 0].imshow(showI, cmap='gray')
                     axs[j, 1].imshow(showS, cmap='gray')
+                    if self.semi_supervised:
+                        showIS = (dIS[:, :, j * int(self.segmentation_patch_shape[2] / nfig), ])
+                        axs[j, 2].imshow(showIS, cmap='gray')
 
             ''' Include histograms '''
             axs[nfig, 0].hist(dI.ravel(), bins=256, range=(np.amin(dI), np.amax(dI)), fc='k', ec='k', density=True)
             axs[nfig, 1].hist(dS.ravel(), bins=256, range=(np.amin(dS), np.amax(dS)), fc='k', ec='k', density=True)
+            if self.semi_supervised:
+                axs[nfig, 2].hist(dIS.ravel(), bins=256, range=(np.amin(dIS), np.amax(dIS)), fc='k', ec='k',
+                                  density=True)
 
             # Set axis labels
-            axs[0, 0].set_title('Imaging Dataset Example (XY Slices)')
-            axs[0, 1].set_title('Segmentation Dataset Example (XY Slices)')
+            axs[0, 0].set_title('Imaging Dataset (XY)')
+            axs[0, 1].set_title('Segmentation Dataset (XY)')
+            if self.semi_supervised:
+                axs[0, 2].set_title('Paired Imaging Dataset (XY)')
             axs[nfig, 0].set_ylabel('Voxel Frequency')
             plt.show(block=False)
             plt.close()
 
             if self.args.DIMENSIONS == 3:
-                _, axs = plt.subplots(nfig, 2, figsize=(10, 15))
+                if self.semi_supervised:
+                    _, axs = plt.subplots(nfig, 3, figsize=(10, 15))
+                else:
+                    _, axs = plt.subplots(nfig, 2, figsize=(10, 15))
                 for j in range(0, nfig):
-                    showI = dI[:, j * int(self.args.SUBVOL_PATCH_SIZE[1] / nfig), :, 0]
-                    showS = dS[:, j * int(self.args.SUBVOL_PATCH_SIZE[1] / nfig), :self.args.SUBVOL_PATCH_SIZE[2] - 1,
-                            0]
+                    showI = dI[:, j * int(self.segmentation_patch_shape[1] / nfig), :, ]
+                    showS = dS[:, j * int(self.segmentation_patch_shape[1] / nfig),
+                            :self.args.SUBVOL_PATCH_SIZE[2] - 1, ]
                     axs[j, 0].imshow(showI, cmap='gray')
                     axs[j, 1].imshow(showS, cmap='gray')
+                    if self.semi_supervised:
+                        showIS = dIS[:, j * int(self.segmentation_patch_shape[1] / nfig),
+                                 :self.args.SUBVOL_PATCH_SIZE[2] - 1, ]
+                        axs[j, 2].imshow(showIS, cmap='gray')
 
             # Set axis labels
-            axs[0, 0].set_title('Imaging Dataset Example (YZ Slices)')
-            axs[0, 1].set_title('Segmentation Dataset Example (YZ Slices)')
+            axs[0, 0].set_title('Imaging Dataset (YZ)')
+            axs[0, 1].set_title('Segmentation Dataset (YZ)')
+            if self.semi_supervised:
+                axs[0, 2].set_title('Paired Dataset (YZ)')
             plt.show(block=False)
             plt.close()

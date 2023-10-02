@@ -25,14 +25,10 @@ class GanMonitor:
         self.imaging_val_data = imaging_val_data
         self.segmentation_val_data = segmentation_val_data
         self.process_imaging_domain = process_imaging_domain
-        self.period = args.PERIOD_2D_CALLBACK,
-        self.period3D = args.PERIOD_3D_CALLBACK,
-        self.model_path = args.output_dir,
+        self.period = args.PERIOD_2D_CALLBACK
+        self.period3D = args.PERIOD_3D_CALLBACK
+        self.model_path = args.output_dir
         self.dims = args.DIMENSIONS
-
-        self.period = self.period[0]
-        self.period3D = self.period3D[0]
-        self.model_path = self.model_path[0]
 
     def save_model(self, model, epoch):
         """Save the trained model at the given epoch.
@@ -43,10 +39,10 @@ class GanMonitor:
         """
 
         # if epoch > 100:
-        model.gen_AB.save(os.path.join(self.model_path, "checkpoints/e{epoch}_genAB".format(epoch=epoch + 1)))
-        model.gen_BA.save(os.path.join(self.model_path, "checkpoints/e{epoch}_genBA".format(epoch=epoch + 1)))
-        model.disc_A.save(os.path.join(self.model_path, "checkpoints/e{epoch}_discA".format(epoch=epoch + 1)))
-        model.disc_B.save(os.path.join(self.model_path, "checkpoints/e{epoch}_discB".format(epoch=epoch + 1)))
+        model.gen_IS.save(os.path.join(self.model_path, "checkpoints/e{epoch}_genAB".format(epoch=epoch + 1)))
+        model.gen_SI.save(os.path.join(self.model_path, "checkpoints/e{epoch}_genBA".format(epoch=epoch + 1)))
+        model.disc_I.save(os.path.join(self.model_path, "checkpoints/e{epoch}_discA".format(epoch=epoch + 1)))
+        model.disc_S.save(os.path.join(self.model_path, "checkpoints/e{epoch}_discB".format(epoch=epoch + 1)))
 
     def stitch_subvolumes(self, gen, img, subvol_size,
                           epoch=-1, stride=(25, 25, 128),
@@ -173,7 +169,7 @@ class GanMonitor:
                           start_dep:(start_dep + kD)]
 
                     if process_img and self.process_imaging_domain is not None:
-                        arr = self.process_imaging_domain(arr)
+                        arr = self.process_imaging_domain(arr, axis=None, keepdims=False)
 
                     arr = gen(np.expand_dims(arr,
                                              axis=0), training=False)[0]
@@ -419,14 +415,13 @@ class GanMonitor:
         else:
             decay_rate = epoch / args.NO_NOISE
         noise = init_noise * (1. - decay_rate)
+        if noise < 0.0:
+            noise = 0.0
         # noise = 0.9 ** (epoch + 1)
         print('Noise std: %0.5f' % noise)
         for layer in model.layers:
-            if type(layer) == layers.GaussianNoise:
-                if noise > 0.:
-                    layer.stddev = noise
-                else:
-                    layer.stddev = 0.0
+            if isinstance(layer, tf.keras.layers.GaussianNoise):
+                layer.stddev = noise
 
     def on_epoch_start(self, model, epoch, args, logs=None):
         """

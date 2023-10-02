@@ -33,6 +33,15 @@ strategy = tf.distribute.MirroredStrategy(['GPU:0', 'GPU:1', 'GPU:2', 'GPU:3'])
 # strategy = tf.distribute.experimental.CentralStorageStrategy()
 # strategy = tf.distribute.OneDeviceStrategy(device='GPU:0')
 
+from time import time
+from vangan import VanGan, train
+from custom_callback import GanMonitor
+from dataset import DatasetGen
+from preprocessing import DataPreprocessor
+from tb_callback import TB_Summary
+from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm, threshold_outliers, save_args, min_max_norm, clahe_3d
+from post_training import epoch_sweep
+from scipy.ndimage import median_filter
 
 ''' TENSORFLOW DEBUGGING '''
 # tf.config.set_soft_device_placement(True)
@@ -166,10 +175,11 @@ print('*** Generating datasets for model ***')
 # Define function to preprocess imaging domain image on the fly (otf)
 # Min/max batch normalisation and rescaling to [-1,1] shown here
 @tf.function
-def process_imaging_otf(tensor):
+def process_imaging_otf(tensor, axis=(1, 2, 3, 4), keepdims=True):
+
     # Calculate the maximum and minimum values along the batch dimension
-    max_vals = tf.reduce_max(tensor, axis=(1, 2, 3, 4), keepdims=True)
-    min_vals = tf.reduce_min(tensor, axis=(1, 2, 3, 4), keepdims=True)
+    max_vals = tf.reduce_max(tensor, axis=axis, keepdims=keepdims)
+    min_vals = tf.reduce_min(tensor, axis=axis, keepdims=keepdims)
 
     # Normalize the tensor between -1 and 1
     return 2.0 * (tensor - min_vals) / (max_vals - min_vals) - 1.0
@@ -204,6 +214,9 @@ plotter = GanMonitor(args,
                      segmentation_val_data=synth_data.partition['validation'],
                      process_imaging_domain=process_imaging_otf
                      )
+
+# Save args to txt file
+save_args(args, os.path.join(args.output_dir, 'Args_Settings.txt'))
 
 ''' TRAIN VAN-GAN MODEL '''
 for epoch in range(args.EPOCHS):

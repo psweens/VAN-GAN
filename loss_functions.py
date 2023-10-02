@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-from utils import min_max_norm_tf
+from utils import min_max_norm_tf, z_score_norm_tf
 from clDice_func import soft_dice_cldice_loss
 
 
@@ -17,7 +17,9 @@ def reduce_mean(self, inputs, axis=None, keepdims=False):
     Returns:
     - A tensor with the mean of the inputs tensor along the given axis divided by the global batch size.
     """
-    return tf.reduce_mean(inputs, axis=axis, keepdims=keepdims) / self.global_batch_size
+
+    arr = tf.reduce_mean(inputs, axis=axis, keepdims=keepdims)
+    return tf.reduce_sum(arr) / self.global_batch_size
 
 
 @tf.function
@@ -70,23 +72,23 @@ def MSE(self, y_true, y_pred):
 def L4(self, y_true, y_pred):
     """
     Compute the per-sample L4 loss between the true and predicted tensors.
-    
+
     Args:
     - y_true: A tensor of true values.
     - y_pred: A tensor of predicted values.
-    
+
     Returns:
     - A scalar tensor representing the per-sample L4 loss between the true and predicted tensors.
     """
     return reduce_mean(self, tf.math.pow(y_true - y_pred, 4), axis=list(range(1, len(y_true.shape))))
 
+
 @tf.function
 def ssim_loss_3d(y_true, y_pred, max_val=1.0, filter_size=3, filter_sigma=1.5, k1=0.01, k2=0.03):
-
     # Create Gaussian filter
     def gaussian_filter(size, sigma):
         grid = tf.range(-size // 2 + 1, size // 2 + 1, dtype=tf.float32)
-        gaussian_filter = tf.exp(-0.5 * (grid / sigma)**2) / (sigma * tf.sqrt(2.0 * np.pi))
+        gaussian_filter = tf.exp(-0.5 * (grid / sigma) ** 2) / (sigma * tf.sqrt(2.0 * np.pi))
         return gaussian_filter / tf.reduce_sum(gaussian_filter)
 
     # Create 3D Gaussian filter
@@ -97,32 +99,33 @@ def ssim_loss_3d(y_true, y_pred, max_val=1.0, filter_size=3, filter_sigma=1.5, k
     # Compute mean and variance
     mu_true = tf.nn.conv3d(y_true, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME')
     mu_pred = tf.nn.conv3d(y_pred, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME')
-    mu_true_sq = mu_true**2
-    mu_pred_sq = mu_pred**2
+    mu_true_sq = mu_true ** 2
+    mu_pred_sq = mu_pred ** 2
     mu_true_pred = mu_true * mu_pred
 
-    sigma_true_sq = tf.nn.conv3d(y_true**2, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_true_sq
-    sigma_pred_sq = tf.nn.conv3d(y_pred**2, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_pred_sq
+    sigma_true_sq = tf.nn.conv3d(y_true ** 2, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_true_sq
+    sigma_pred_sq = tf.nn.conv3d(y_pred ** 2, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_pred_sq
     sigma_true_pred = tf.nn.conv3d(y_true * y_pred, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_true_pred
 
-    c1 = (k1 * max_val)**2
-    c2 = (k2 * max_val)**2
+    c1 = (k1 * max_val) ** 2
+    c2 = (k2 * max_val) ** 2
 
-    ssim_map = (2 * mu_true_pred + c1) * (2 * sigma_true_pred + c2) / ((mu_true_sq + mu_pred_sq + c1) * (sigma_true_sq + sigma_pred_sq + c2))
+    ssim_map = (2 * mu_true_pred + c1) * (2 * sigma_true_pred + c2) / (
+                (mu_true_sq + mu_pred_sq + c1) * (sigma_true_sq + sigma_pred_sq + c2))
 
     # Compute the mean SSIM loss across the batch
-    return 1.0 - tf.reduce_mean(ssim_map)
+    return 1.0 - ssim_map
 
 
 @tf.function
 def wasserstein_loss(prob_real_is_real, prob_fake_is_real):
     """
     Compute the Wasserstein loss between the probabilities that the real inputs are real and the generated inputs are real.
-    
+
     Args:
     - prob_real_is_real: A tensor representing the probability that the real inputs are real.
     - prob_fake_is_real: A tensor representing the probability that the generated inputs are real.
-    
+
     Returns:
     - A scalar tensor representing the Wasserstein loss between the two input probability tensors.
     """
@@ -176,11 +179,14 @@ def cycle_loss(self, real_image, cycled_image, typ=None):
     elif typ == "mse":
         return MSE(self, real_image, cycled_image) * self.lambda_cycle
     elif typ == "L4":
-        return L4(self, real_image, cycled_image) * self.lambda_cycle
+        return L4(self,
+                  real_image,
+                  cycled_image) * self.lambda_cycle
     else:
         real = min_max_norm_tf(real_image, axis=(1, 2, 3, 4))
         cycled = min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4))
         loss_obj = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction=tf.keras.losses.Reduction.NONE)
+        # loss_obj = tf.keras.losses.BinaryFocalCrossentropy(from_logits=False, reduction=tf.keras.losses.Reduction.NONE)
         return reduce_mean(self, loss_obj(real, cycled)) * self.lambda_cycle
 
 
@@ -196,27 +202,28 @@ def cycle_reconstruction(self, real_image, cycled_image):
     Returns:
     - loss: float Tensor, representing the per sample cycle reconstruction loss
     """
-    real = min_max_norm_tf(real_image, axis=(1, 2, 3, 4))
-    cycled = min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4))
-    return reduce_mean(self, ssim_loss_3d(real, cycled, max_val=1.0)) * self.lambda_cycle
+    return reduce_mean(self,
+                       ssim_loss_3d(min_max_norm_tf(real_image, axis=(1, 2, 3, 4)),
+                                    min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4)), max_val=1.0)
+                       ) * self.lambda_reconstruction
 
 
 @tf.function
 def cycle_seg_loss(self, real_image, cycled_image):
     """
     Compute the segmentation loss between the real image and the cycled image
-    
+
     Args:
     - real_image: a tensor of shape (batch_size, image_size, image_size, channels) representing the real image
     - cycled_image: a tensor of shape (batch_size, image_size, image_size, channels) representing the cycled image
-    
+
     Returns:
     - a scalar tensor representing the segmentation loss
     """
     real = min_max_norm_tf(real_image, axis=(1, 2, 3, 4))
     cycled = min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4))
     cl_loss_obj = soft_dice_cldice_loss()
-    return reduce_mean(self, cl_loss_obj(real, cycled)) * self.lambda_cycle
+    return cl_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
 
 
 @tf.function
@@ -289,7 +296,7 @@ def discriminator_loss_fn(self, real_image, fake_image, typ=None, from_logits=Tr
         real_image: A tensor representing the real image.
         fake_image: A tensor representing the fake image.
         typ (str, optional): The type of loss function to use. Defaults to None.
-        from_logits (bool, optional): Whether to apply sigmoid activation function to the predictions. 
+        from_logits (bool, optional): Whether to apply sigmoid activation function to the predictions.
             Defaults to True.
 
     Returns:
