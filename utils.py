@@ -4,7 +4,10 @@ import numpy as np
 import tensorflow as tf
 import skimage.io as sk
 from skimage import exposure
-
+from scipy import stats
+import tf_clahe
+import mclahe as mc
+import tensorflow_addons as tfa
 
 def min_max_norm(data):
     """
@@ -39,14 +42,12 @@ def min_max_norm_tf(arr, axis=None):
         # Normalize entire array
         min_val = tf.reduce_min(arr)
         max_val = tf.reduce_max(arr)
-        tensor = (arr - min_val) / (max_val - min_val)
     else:
         # Normalize along a specific axis
         min_val = tf.reduce_min(arr, axis=axis, keepdims=True)
         max_val = tf.reduce_max(arr, axis=axis, keepdims=True)
-        tensor = (arr - min_val) / (max_val - min_val)
 
-    return tensor
+    return (arr - min_val) / (max_val - min_val)
 
 
 def rescale_arr_tf(arr, alpha=-0.5, beta=0.5):
@@ -82,6 +83,28 @@ def z_score_norm(data):
     else:
         return data - np.mean(data)
         # raise ValueError("Cannot perform z-score normalization when the standard deviation is zero.")
+
+
+import tensorflow as tf
+
+
+def z_score_norm_tf(data, epsilon=1e-8):
+    """
+    Perform z-score normalization on a TensorFlow tensor.
+
+    Args:
+    - data (tf.Tensor): A TensorFlow tensor containing the data to be normalized.
+                        Shape should be (batch, depth, width, length, channel).
+    - epsilon (float): A small value to avoid division by zero when std_data is close to zero.
+
+    Returns:
+    - tf.Tensor: A TensorFlow tensor containing the normalized data.
+                 Shape will be the same as the input.
+    """
+    mean_data = tf.math.reduce_mean(data, axis=(1, 2, 3, 4), keepdims=True)
+    std_data = tf.math.reduce_std(data, axis=(1, 2, 3, 4), keepdims=True)
+
+    return (data - mean_data) / tf.where(std_data > epsilon, std_data, epsilon)
 
 
 def threshold_outliers(image_volume, threshold=6):
@@ -152,6 +175,7 @@ def binarise_tensor(arr):
                     tf.ones(tf.shape(arr)),
                     tf.math.negative(tf.ones(tf.shape(arr))))
 
+
 def add_gauss_noise(self, img, rate):
     """
     Add Gaussian noise to a TensorFlow image tensor.
@@ -164,6 +188,20 @@ def add_gauss_noise(self, img, rate):
     (tf.Tensor): TensorFlow image tensor with added Gaussian noise and values clipped between -1.0 and 1.0.
     """
     return tf.clip_by_value(img + tf.random.normal(tf.shape(img), 0.0, rate), -1., 1.)
+
+
+def clip_images(images):
+    """
+    Clips input images to the range of [-1, 1].
+
+    Args:
+        images: Input image batch tensor.
+
+    Returns:
+        Clipped image batch tensor.
+    """
+    return tf.clip_by_value(images, clip_value_min=-1.0, clip_value_max=1.0)
+
 
 def load_volume(file, size=(600, 600, 700), datatype='uint8', normalise=True):
     """
@@ -219,7 +257,7 @@ def resize_volume(img, target_size=None):
     return arr2
 
 
-def get_vaccuum(arr, dim):
+def get_vacuum(arr, dim=3):
     """
     Returns the smallest subarray containing all non-zero elements in the input array along the specified dimension(s).
     
@@ -231,10 +269,10 @@ def get_vaccuum(arr, dim):
     numpy.ndarray: Subarray containing all non-zero elements in the input array along the specified dimension(s).
     """
     if dim == 2:
-        x, y = np.nonzero(arr)
+        x, y, _ = np.nonzero(arr)
         return arr[x.min():x.max() + 1, y.min():y.max() + 1]
     else:
-        x, y, z = np.nonzero(arr)
+        x, y, z, _ = np.nonzero(arr)
         return arr[x.min():x.max() + 1, y.min():y.max() + 1, z.min():z.max() + 1]
 
 
@@ -284,10 +322,9 @@ def append_dict(dict1, dict2, replace=False) -> dict:
     """
     Append items in dict2 to dict1.
     
-    Args:
-    - dict1 (dict): The dictionary to which items in dict2 will be appended
-    - dict2 (dict): The dictionary containing items to be appended to dict1
-    - replace (bool): If True, existing values in dict1 with the same key as values in dict2 will be replaced with the values from dict2
+    Args: - dict1 (dict): The dictionary to which items in dict2 will be appended - dict2 (dict): The dictionary
+    containing items to be appended to dict1 - replace (bool): If True, existing values in dict1 with the same key as
+    values in dict2 will be replaced with the values from dict2
     
     Returns:
     - dict: A dictionary containing the appended items
@@ -357,8 +394,64 @@ def get_shape(arr):
         arr = arr[0]  # set arr to the first element of arr
     return res  # return the shape list
 
-# import tf_clahe 
 
-# @tf.function(experimental_compile=True)  # Enable XLA
-# def fast_clahe(img):
-#     return tf_clahe.clahe(img, tile_grid_size=(4, 4), gpu_optimized=True)
+@tf.function
+def fast_clahe(img, gpu_optimized=True):
+    return tf_clahe.clahe(img, clip_limit=1.5, gpu_optimized=gpu_optimized)
+
+@tf.function
+def clahe_3d(image):
+    """
+    Applies 3D Contrast Limited Adaptive Histogram Equalization (CLAHE) to a 3D image.
+
+    Args:
+        image (tf.Tensor): Input 3D image of shape (batch_size, width, length, depth, channels).
+        clip_limit (float): Clip limit for CLAHE.
+        grid_size (tuple): Size of the grid for histogram equalization (depth, width, length).
+        num_bins (int): Number of bins in the histogram.
+
+    Returns:
+        tf.Tensor: Processed 3D image.
+    """
+    # Extract dimensions
+    batch_size, width, length, depth, channels = image.shape
+
+    # Initialize a list to hold the processed slices
+    processed_slices = []
+
+    # Create a CLAHE op for each depth slice and append it to the list
+    for d in range(depth):
+        slice_image = image[:, :, :, d, :]
+
+        # Apply CLAHE to the slice using fast_clahe function
+        # clahe = tfa.image.median_filter2d(
+        #     fast_clahe(slice_image),
+        #     filter_shape=(2, 2)
+        # )
+        clahe = fast_clahe(slice_image)
+
+        # Append the processed slice to the list
+        processed_slices.append(clahe)
+
+    # Stack the processed slices to form the final 3D image
+    processed_image = tf.stack(processed_slices, axis=3)
+
+    return processed_image
+
+
+def save_args(args, filename):
+    def format_value(value):
+        if isinstance(value, tuple):
+            return f"({', '.join(map(str, value))})"
+        return str(value)
+
+    # Filter out attributes that are not argparse arguments
+    arg_dict = {arg: value for arg, value in vars(args).items() if not arg.startswith('_')}
+
+    with open(filename, "w") as f:
+        f.write("Command line arguments:\n")
+        for arg, value in arg_dict.items():
+            formatted_value = format_value(value)
+            f.write(f"{arg}: {formatted_value}\n")
+
+

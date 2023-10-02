@@ -11,10 +11,12 @@ def get_discriminator(
         kernel_initializer='he_normal',
         num_downsampling=3,
         use_dropout=False,
+        dropout_rate=0.2,
         wasserstein=False,
         use_SN=False,
         use_input_noise=False,
         use_layer_noise=False,
+        use_standardisation=False,
         name=None,
         noise_std=0.1
 ):
@@ -80,6 +82,7 @@ def get_discriminator(
                 kernel_size=(4, 4, 4),
                 strides=(2, 2, 2),
                 use_dropout=use_dropout,
+                dropout_rate=dropout_rate,
                 use_spec_norm=use_SN,
                 use_layer_noise=use_layer_noise,
                 noise_std=noise_std
@@ -92,6 +95,7 @@ def get_discriminator(
                 kernel_size=(4, 4, 4),
                 strides=(1, 1, 1),
                 use_dropout=use_dropout,
+                dropout_rate=dropout_rate,
                 padding='same',
                 use_spec_norm=use_SN,
                 use_layer_noise=use_layer_noise,

@@ -24,8 +24,11 @@ class VanGan:
             strategy,
             lambda_cycle=10.0,
             lambda_identity=5,
+            lambda_reconstruction=5,
+            lambda_topology=5,
             gen_i2s='resnet',
             gen_s2i='resnet',
+            semi_supervised=False,
             wasserstein=False,
             ncritic=5,
             gp_weight=10.0
@@ -34,10 +37,13 @@ class VanGan:
         self.n_devices = args.N_DEVICES
         self.img_size = args.INPUT_IMG_SIZE
         self.lambda_cycle = lambda_cycle
-        self.lambda_identity = lambda_identity,
+        self.lambda_identity = lambda_identity
+        self.lambda_reconstruction = lambda_reconstruction
+        self.lambda_topology = lambda_topology
         self.channels = args.CHANNELS
         self.gen_i2s_typ = gen_i2s
         self.gen_s2i_typ = gen_s2i
+        self.semi_supervised = semi_supervised
         self.global_batch_size = args.GLOBAL_BATCH_SIZE
         self.dims = args.DIMENSIONS
         if self.dims == 2:
@@ -115,7 +121,7 @@ class VanGan:
                     # output_activation=None,
                 )
             else:
-                raise ValueError('AB Generator type not recognised')
+                raise ValueError('IS Generator type not recognised')
 
             if self.gen_s2i_typ == 'resnet':
                 self.gen_SI = get_resnet_generator(
@@ -155,7 +161,7 @@ class VanGan:
                     use_input_noise=False
                 )
             else:
-                raise ValueError('BA Generator type not recognised')
+                raise ValueError('SI Generator type not recognised')
 
             # Get the discriminators
             self.disc_I = get_discriminator(
@@ -163,7 +169,8 @@ class VanGan:
                 batch_size=self.global_batch_size,
                 name='discriminator_I',
                 filters=64,
-                use_dropout=False,
+                use_dropout=True,
+                dropout_rate=0.2,
                 wasserstein=self.wasserstein,
                 use_SN=False,
                 use_input_noise=True,
@@ -175,7 +182,8 @@ class VanGan:
                 batch_size=self.global_batch_size,
                 name='discriminator_S',
                 filters=64,
-                use_dropout=False,
+                use_dropout=True,
+                dropout_rate=0.2,
                 wasserstein=self.wasserstein,
                 use_SN=False,
                 use_input_noise=True,
@@ -227,14 +235,14 @@ class VanGan:
                                                                  clipnorm=100)
 
             # Initialise checkpoint
-            self.checkpoint = tf.train.Checkpoint(gen_AB=self.gen_IS,
-                                                  gen_BAF=self.gen_SI,
-                                                  disc_A=self.disc_I,
-                                                  disc_B=self.disc_S,
-                                                  gen_A_optimizer=self.gen_I_optimizer,
-                                                  gen_B_optimizer=self.gen_S_optimizer,
-                                                  disc_A_optimizer=self.disc_I_optimizer,
-                                                  disc_B_optimizer=self.disc_S_optimizer)
+            self.checkpoint = tf.train.Checkpoint(gen_IS=self.gen_IS,
+                                                  gen_SI=self.gen_SI,
+                                                  disc_I=self.disc_I,
+                                                  disc_S=self.disc_S,
+                                                  gen_I_optimizer=self.gen_I_optimizer,
+                                                  gen_S_optimizer=self.gen_S_optimizer,
+                                                  disc_I_optimizer=self.disc_I_optimizer,
+                                                  disc_S_optimizer=self.disc_S_optimizer)
 
     def save_checkpoint(self, epoch):
         """ save checkpoint to checkpoint_dir, overwrite if exists """
@@ -246,14 +254,16 @@ class VanGan:
         if newpath is not None:
             self.checkpoint_prefix = os.path.join(newpath, 'checkpoint')
         checkpoint_path = self.checkpoint_prefix + "_e{epoch}".format(epoch=epoch)
-        if os.path.exists(f'{os.path.join(checkpoint_path)}.index'):
-            self.checkpoint_loaded = True
-            with self.strategy.scope():
-                if expect_partial:
-                    self.checkpoint.read(checkpoint_path).expect_partial()
-                else:
-                    self.checkpoint.read(checkpoint_path)
-            print(f'\nLoaded checkpoint from {checkpoint_path}\n')
+
+        print(f"Trying to load checkpoint from path: {checkpoint_path}")
+        checkpoint_files = [f'{checkpoint_path}.index', f'{checkpoint_path}.data-00000-of-00001']
+        if all(os.path.exists(file) for file in checkpoint_files):
+            if expect_partial:
+                self.checkpoint.restore(checkpoint_path).expect_partial()
+            else:
+                self.checkpoint.restore(checkpoint_path)
+            print(f'Loaded checkpoint from {checkpoint_path}\n')
+
         else:
             print('Error: Checkpoint not found!')
 
@@ -293,9 +303,9 @@ class VanGan:
 
         seg_loss = self.seg_loss_fn(self, real_S, cycled_S)
         cycled_I = self.gen_SI(fake_S, training=training)
-        cycle_loss_S = self.cycle_loss_fn(self, real_I, cycled_I, typ='L2')
+        cycle_loss_S = self.cycle_loss_fn(self, real_I, cycled_I, typ='mse')
 
-        reconstruction_loss_I = self.reconstruction_loss(self, real_I, cycled_I)
+        reconstruction_loss = self.reconstruction_loss(self, real_I, cycled_I)
 
         # Identity mapping
         # id_SI_loss = self.identity_loss_fn(self, real_I, self.gen_SI(real_I, training=True))
@@ -332,8 +342,8 @@ class VanGan:
             'D_S_loss': disc_S_loss,
             'gen_IS_loss': gen_IS_loss,
             'gen_SI_loss': gen_SI_loss,
-            'cycle_gen_IS_loss': cycle_loss_I,
-            'cycle_gen_SI_loss': cycle_loss_S,
+            'cycle_gen_SIS_loss': cycle_loss_I,
+            'cycle_gen_ISI_loss': cycle_loss_S,
             'seg_loss': seg_loss,
             'reconstruction_loss_I': reconstruction_loss_I,
             # 'identity_IS': id_IS_loss,

@@ -45,7 +45,7 @@ Tensorflow and the remaining Python packages below can be installed in a [_conda
 
 The remaining required Python packages can be installed using _pip_ in a terminal window:
 ```bash
-pip install opencv-python scikit-image tqdm tensorflow_addons tensorflow-mri joblib matplotlib
+pip install opencv-python scikit-image tqdm tensorflow_addons joblib matplotlib
 ```
 
 VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the following package versions:
@@ -67,10 +67,10 @@ VAN-GAN code was originally developed by [Paul W. Sweeney](https://www.psweeney.
 
 Please get in contact in you have any questions.
 
-## References
+## Citation
 If you use this code or data, we kindly ask that you please cite the below:
 > [Segmentation of 3D blood vessel networks using unsupervised deep learning](https://doi.org/10.1101/2023.04.30.538453)<br>
-> Paul W. Sweeney et al.
+> Paul W. Sweeney et al. *bioRxiv*
 
 ## Licence
 The project is licenced under the MIT Licence.
