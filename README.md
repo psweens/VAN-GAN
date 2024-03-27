@@ -7,7 +7,7 @@
 Recent advancements in imaging hardware have opened up new possibilities for visualising 3D vascular networks with exceptional resolution. However, the task of segmenting microvascular networks from these 3D image volumes and interpreting their physiological and pathological significance remains a time-consuming and error-prone process. Deep learning holds great potential in addressing this challenge, but existing supervised frameworks rely on labor-intensive human-annotated ground truth labels. To overcome these limitations, we introduce ***Vessel Segmentation Generative Adversarial Network (VAN-GAN)***, an unsupervised image-to-image translation deep learning model.
 
 ![alt text](VANGAN_Overview.jpg)
-*(A) The training and application process of VAN-GAN utilises two unpaired datasets (real PAI volumes, $x$ and synthetic blood vessels, $y$) to train the segmentor, $G$, for real-world use. (B) VAN-GAN adapts the cycleGAN model and learns mappings between imaging (x) and segmentation (y) domains (G:x->y, F:y->x) using additional reconstruction and topological cycle-consistency constraints.*
+*(A) The training and application process of VAN-GAN utilises two unpaired datasets (real PAI volumes, x and synthetic blood vessels, y) to train the segmentor, G, for real-world use. (B) VAN-GAN adapts the cycleGAN model and learns mappings between imaging (x) and segmentation (y) domains (G:x->y, F:y->x) using additional reconstruction and topological cycle-consistency constraints.*
 
 ## Methodology
 
