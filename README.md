@@ -7,7 +7,7 @@
 Recent advancements in imaging hardware have opened up new possibilities for visualising 3D vascular networks with exceptional resolution. However, the task of segmenting microvascular networks from these 3D image volumes and interpreting their physiological and pathological significance remains a time-consuming and error-prone process. Deep learning holds great potential in addressing this challenge, but existing supervised frameworks rely on labor-intensive human-annotated ground truth labels. To overcome these limitations, we introduce ***Vessel Segmentation Generative Adversarial Network (VAN-GAN)***, an unsupervised image-to-image translation deep learning model.
 
 ![alt text](VANGAN_Overview.jpg)
-*(A) VAN-GAN performs unsupervised training to learn the mappings between the imaging and segmentation domains to train a generator which can segment 3D vasculatures from biomedical image volumes. (B) The two domains are define as: 1) Imaging domain, the dataset of real biomedical image volumes; and 2) segmentation domain, the dataset of computer-generated 3D vascular labels. Example of mouse ear imaged using mesoscopic photoacoustic imaging shown.*
+*(A) The training and application process of VAN-GAN utilises two unpaired datasets (real PAI volumes, $x$ and synthetic blood vessels, $y$) to train the segmentor, $G$, for real-world use. (B) VAN-GAN adapts the cycleGAN model and learns mappings between imaging ($x$) and segmentation ($y$) domains ($G:x\rightarrow\tilde{y}$, $F:y\rightarrow\tilde{x}$) using additional reconstruction, $\mathcal{L}_{rec}$, and topological, $\mathcal{L}_{topo}$, cycle-consistency constraints.*
 
 ## Methodology
 
@@ -22,8 +22,8 @@ VAN-GAN is a Python package that employs image-to-image translation techniques t
   * **Exclusion of Identity Loss**: The identity loss component is excluded from the objective, streamlining the segmentation process and avoiding unnecessary complexities. 
 * **Synthetic 3D Images**: VAN-GAN leverages synthetic blood vessel networks closely resembling real-life anatomy during training, effectively removing the reliance on manual labelling.
 
-![alt text](Generator_Labelling_Architecture.jpg)
-*The VAN-GAN model trains a 3D deep residual U-Net architecture to segment 3D images of real blood vessel networks. An example of a tumour vasculature imaged using mesoscopic photoacoustic imaging is shown where the image is provided as input and the 3D segmentation mask predicted as output.*
+![alt text](Generator_Architecture.jpg)
+*(A) The VAN-GAN model trains a 3D deep residual U-Net architecture to segment 3D images of real blood vessel networks. An example of a tumour vasculature imaged using mesoscopic photoacoustic imaging is shown where the image is provided as input and the 3D segmentation mask predicted as output. (B) Full pre-activation residual blocks in the residual U-Net and (C) a sliding window approach is utilised to construction mask of large images. *
 
 ## Installation
 To install the package from source, download the latest release on the VAN-GAN repository or run the following in a terminal window:
