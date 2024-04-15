@@ -100,7 +100,7 @@ class DataPreprocessor:
         # Split data into train/validate/test
         print('Splitting dataset ...')
         self.train_files, self.test_files = np.split(files, [int(len(files) * 0.9)])
-        self.train_files, self.validate_files = np.split(files, [int(len(files) * 0.8)])
+        self.train_files, self.validate_files = np.split(self.train_files, [int(len(self.train_files) * 0.8)])
 
         # Save partitioned dataset
         self.partition['training'] = self.train_files
