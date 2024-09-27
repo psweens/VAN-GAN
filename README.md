@@ -61,8 +61,8 @@ Please get in contact in you have any questions.
 
 ## Citation
 If you use this code or data, we kindly ask that you please cite the below:
-> [Segmentation of 3D blood vessel networks using unsupervised deep learning](https://doi.org/10.1101/2023.04.30.538453)<br>
-> Paul W. Sweeney et al. *bioRxiv*
+> [Unsupervised Segmentation of 3D Microvascular Photoacoustic Images Using Deep Generative Learning](https://doi.org/10.1002/advs.202402195)<br>
+> Paul W. Sweeney et al. *Advanced Science*
 
 ## Licence
 The project is licenced under the MIT Licence.
