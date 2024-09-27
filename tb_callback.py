@@ -14,10 +14,11 @@ import typing as t
 class TB_Summary:
     """ Helper class to write TensorBoard summaries """
 
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, n_devices):
         self.dpi = 120
-        plt.style.use('seaborn-deep')
+#        plt.style.use('seaborn-deep')
 
+        self.n_devices = n_devices
         self.train_summary_writer = tf.summary.create_file_writer(os.path.join(output_dir, 'train'))
         self.validate_summary_writer = tf.summary.create_file_writer(os.path.join(output_dir, 'validate'))
 
@@ -31,8 +32,11 @@ class TB_Summary:
 
     def losses(self, results):
         for key, value in results.items():
-            value = tf.math.reduce_mean(value)
-            print('%s = %.4f  ' % (key, value.numpy()), end='')
+            if key in ["gen_I_lr", "gen_S_lr", "disc_I_lr", "disc_S_lr"]:
+                pass
+            else:
+                value = tf.math.reduce_mean(value)
+                print('%s = %.4f  ' % (key, value.numpy()), end='')
         print('\n')
 
     def image(self, tag, values, step: int = 0, training: bool = False):

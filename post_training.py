@@ -32,8 +32,9 @@ def epoch_sweep(args, vangan_model, plotter, test_path='', start=100, end=200, s
 
         testfiles = os.listdir(test_path)
         filename = 'e{idx}_VG_'.format(idx=i)
-        for file in testfiles:
-            testfiles[file] = os.path.join(test_path, file)
+        for file in range(len(testfiles)):
+            testfiles[file] = os.path.join(test_path, testfiles[file])
 
-        plotter.run_mapping(vangan_model, testfiles, args.INPUT_IMG_SIZE, filetext=filename, segmentation=segmentation,
-                            stride=(50, 50, 50), filepath=folder, padFactor=0.1)
+        plotter.run_mapping(vangan_model, testfiles, args.INPUT_IMG_SIZE,
+                            filetext=filename, segmentation=segmentation, filepath=folder)
+

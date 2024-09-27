@@ -21,10 +21,10 @@ def min_max_norm(data):
     """
     dmin = np.min(data)
     dmax = np.max(data)
-    if (dmax - dmin) == 0:
+    if (dmax - dmin) == 0.:
         raise ValueError("Cannot perform min-max normalization when max and min are equal.")
     return (data - dmin) / (dmax - dmin)
-
+#
 
 def min_max_norm_tf(arr, axis=None):
     """
@@ -105,6 +105,34 @@ def z_score_norm_tf(data, epsilon=1e-8):
     std_data = tf.math.reduce_std(data, axis=(1, 2, 3, 4), keepdims=True)
 
     return (data - mean_data) / tf.where(std_data > epsilon, std_data, epsilon)
+
+
+@tf.function
+def matched_crop(self, stack, axis=None, rescale=False):
+    """
+    Randomly crop the input tensor `stack` (which is compose of two image stacks) along a specified axis and return the resulting cropped tensors.
+
+    Args:
+    - stack: A tensor to be cropped.
+    - axis: The axis along which to crop the input tensor. If axis=1, the input tensor will be cropped horizontally; if axis=3, it will be cropped vertically. Defaults to None.
+    - rescale: A Boolean value indicating whether to rescale the resulting tensor values between 0 and 1. Defaults to False.
+
+    Returns:
+    - A tuple containing two cropped tensors of the same shape as the input tensor.
+    """
+    if axis == 1:
+        shape = (self.batch_size, 2 * self.img_size[1], self.img_size[2], 1, self.channels)
+        raxis = 3
+    elif axis == 3:
+        shape = (self.batch_size, 1, self.img_size[2], 2 * self.img_size[3], self.channels)
+        raxis = 1
+        axis -= 1
+
+    arr = tf.squeeze(tf.image.random_crop(stack, size=shape),
+                     axis=raxis)
+    if rescale:
+        arr = min_max_norm_tf(arr)
+    return tf.split(arr, num_or_size_splits=2, axis=axis)
 
 
 def threshold_outliers(image_volume, threshold=6):
@@ -203,7 +231,7 @@ def clip_images(images):
     return tf.clip_by_value(images, clip_value_min=-1.0, clip_value_max=1.0)
 
 
-def load_volume(file, size=(600, 600, 700), datatype='uint8', normalise=True):
+def load_volume(file, datatype='uint8', normalise=True):
     """
     Load a volume from a (for example) tif file and normalise it.
     
@@ -257,24 +285,40 @@ def resize_volume(img, target_size=None):
     return arr2
 
 
-def get_vacuum(arr, dim=3):
+# def get_vacuum(arr, dim=3):
+#     """
+#     Returns the smallest subarray containing all non-zero elements in the input array along the specified dimension(s).
+#
+#     Args:
+#     arr (numpy.ndarray): Input array.
+#     dim (int or tuple of ints): Dimension(s) along which to extract the subarray.
+#
+#     Returns:
+#     numpy.ndarray: Subarray containing all non-zero elements in the input array along the specified dimension(s).
+#     """
+#     if dim == 2:
+#         x, y, _ = np.nonzero(arr)
+#         return arr[x.min():x.max() + 1, y.min():y.max() + 1]
+#     else:
+#         x, y, z, _ = np.nonzero(arr)
+#         return arr[x.min():x.max() + 1, y.min():y.max() + 1, z.min():z.max() + 1]
+
+@tf.function
+def get_vacuum(arr):
     """
     Returns the smallest subarray containing all non-zero elements in the input array along the specified dimension(s).
-    
-    Args:
-    arr (numpy.ndarray): Input array.
-    dim (int or tuple of ints): Dimension(s) along which to extract the subarray.
-    
-    Returns:
-    numpy.ndarray: Subarray containing all non-zero elements in the input array along the specified dimension(s).
-    """
-    if dim == 2:
-        x, y, _ = np.nonzero(arr)
-        return arr[x.min():x.max() + 1, y.min():y.max() + 1]
-    else:
-        x, y, z, _ = np.nonzero(arr)
-        return arr[x.min():x.max() + 1, y.min():y.max() + 1, z.min():z.max() + 1]
 
+    Args:
+    arr (tensorflow.Tensor): Input array.
+    dim (int or tuple of ints): Dimension(s) along which to extract the subarray.
+
+    Returns:
+    tensorflow.Tensor: Subarray containing all non-zero elements in the input array along the specified dimension(s).
+    """
+    non_zero_indices = tf.where(tf.math.not_equal(arr, 0))
+    min_indices = tf.reduce_min(non_zero_indices, axis=0)
+    max_indices = tf.reduce_max(non_zero_indices, axis=0)
+    return tf.slice(arr, min_indices, max_indices - min_indices + 1)
 
 def hist_equalization(img):
     """

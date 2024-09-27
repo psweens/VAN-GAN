@@ -3,21 +3,12 @@ import shutil
 import glob
 import argparse
 import numpy as np
-import scipy.stats as sp
 import tensorflow as tf
-from time import time
-from vangan import VanGan, train
-from custom_callback import GanMonitor
-from dataset import DatasetGen
-from preprocessing import DataPreprocessor
-from tb_callback import TB_Summary
-from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm
-from post_training import epoch_sweep
+
+tf.keras.backend.clear_session()
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
-
-tf.keras.backend.clear_session()
 
 print('*** Setting up GPU ***')
 ''' SET GPU MEMORY USAGE '''
@@ -39,14 +30,12 @@ from custom_callback import GanMonitor
 from dataset import DatasetGen
 from preprocessing import DataPreprocessor
 from tb_callback import TB_Summary
-from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm, threshold_outliers, save_args, min_max_norm, clahe_3d
+from utils import save_args
 from post_training import epoch_sweep
-from scipy.ndimage import median_filter
 
 ''' TENSORFLOW DEBUGGING '''
 # tf.config.set_soft_device_placement(True)
 # tf.debugging.enable_check_numerics()
-
 
 ''' ORGANISE TENSORBOARD OUTPUT FOLDERS '''
 print('*** Organising tensorboard folders ***')
@@ -63,7 +52,7 @@ if os.path.isdir(monitorDir):
 else:
     os.makedirs(monitorDir)
 
-summary = TB_Summary(tensorboardDir)  # Initialise TensorBoard summary helper
+summary = TB_Summary(tensorboardDir, len(physical_devices))  # Initialise TensorBoard summary helper
 
 ''' SET PARAMETERS '''
 print('*** Setting VANGAN parameters ***')
@@ -84,6 +73,7 @@ args.INITIATE_LR_DECAY = 0.5 * args.EPOCHS  # Set start of learning rate decay t
 args.NO_NOISE = args.EPOCHS  # Set when discriminator noise decays to 0
 
 # Image parameters
+args.SURFACE_ILLUMINATION = True
 args.CHANNELS = 1
 args.DIMENSIONS = 3
 args.RAW_IMG_SIZE = (512, 512, 140, args.CHANNELS)  # Unprocessed imaging domain image dimensions
@@ -170,8 +160,6 @@ synth_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataB_partition.pkl'
 
 ''' GENERATE TENSORFLOW DATASETS '''
 print('*** Generating datasets for model ***')
-
-
 # Define function to preprocess imaging domain image on the fly (otf)
 # Min/max batch normalisation and rescaling to [-1,1] shown here
 @tf.function
@@ -190,29 +178,30 @@ getDataset = DatasetGen(args=args,
                         imaging_domain_data=imaging_data.partition,
                         seg_domain_data=synth_data.partition,
                         strategy=strategy,
-                        otf_imaging=process_imaging_otf  # Set to None if OTF processing not needed
+                        otf_imaging=process_imaging_otf,  # Set to None if OTF processing not needed
+                        surface_illumination=args.SURFACE_ILLUMINATION
+                        # semi_supervised_dir='/mnt/sda/3DcycleGAN_simLNet_LNet/all_A_data'
                         )
 
 ''' CALCULATE NUMBER OF TRAINING / VALIDATION STEPS '''
 args.train_steps = int(np.amax([len(imaging_data.partition['training']),
                                 len(synth_data.partition['training'])]) / args.GLOBAL_BATCH_SIZE)
 
-args.val_steps = int(np.amax([len(imaging_data.partition['validation']),
-                              len(synth_data.partition['validation'])]) / args.GLOBAL_BATCH_SIZE)
+args.val_steps = int(np.round(np.amax([len(imaging_data.partition['validation']),
+                                       len(synth_data.partition['validation'])]) / args.GLOBAL_BATCH_SIZE))
+if args.val_steps < 1.:
+    args.val_steps = int(1)
 
 ''' DEFINE VANGAN '''
-vangan_model = VanGan(args,
-                      strategy=strategy,
-                      gen_i2s='resUnet',
-                      gen_s2i='resUnet'
-                      )
+vangan_model = VanGan(args, strategy=strategy, semi_supervised=False)
 
 ''' DEFINE CUSTOM CALLBACK '''
 plotter = GanMonitor(args,
                      dataset=getDataset,
                      imaging_val_data=imaging_data.partition['validation'],
                      segmentation_val_data=synth_data.partition['validation'],
-                     process_imaging_domain=process_imaging_otf
+                     process_imaging_domain=process_imaging_otf,
+                     surface_illumination=args.SURFACE_ILLUMINATION
                      )
 
 # Save args to txt file
@@ -221,9 +210,15 @@ save_args(args, os.path.join(args.output_dir, 'Args_Settings.txt'))
 ''' TRAIN VAN-GAN MODEL '''
 for epoch in range(args.EPOCHS):
     print(f'\nEpoch {epoch + 1:03d}/{args.EPOCHS:03d}')
+    vangan_model.current_epoch.assign(epoch + 1)
     start = time()
 
-    vangan_model.current_epoch = epoch
+    # if (epoch + 1) <= 5:
+    #     vangan_model.identity_off.assign(0.)
+    # else:
+    #     vangan_model.identity_off.assign(1.)
+    if (epoch + 1) >= 100:#0.5 * args.EPOCHS:
+        vangan_model.shared_cycle.assign(1.)
     plotter.on_epoch_start(vangan_model, epoch, args)
 
     'Training GAN for fixed no. of steps'
@@ -237,6 +232,7 @@ for epoch in range(args.EPOCHS):
 
     if epoch % args.PERIOD_2D_CALLBACK == 1 or epoch == args.EPOCHS - 1:
         plotter.on_epoch_end(vangan_model, epoch, args)
+        # if epoch > 100:
         vangan_model.save_checkpoint(epoch=epoch)
 
     end = time()
@@ -245,20 +241,11 @@ for epoch in range(args.EPOCHS):
 ''' CREATE VANGAN PREDICTIONS '''
 # Predict segmentation probability maps for imaging test dataset
 plotter.run_mapping(vangan_model, imaging_data.partition['testing'], args.INPUT_IMG_SIZE, filetext='VANGAN_',
-                    filepath=args.output_dir, segmentation=True, stride=(25, 25, 25))
+                    filepath=args.output_dir, segmentation=True)
 # Prediction fake imaging data using synthetic segmentation test dataset
 plotter.run_mapping(vangan_model, synth_data.partition['testing'], args.INPUT_IMG_SIZE, filetext='VANGAN_',
                     filepath=args.output_dir, segmentation=False, stride=(25, 25, 25))
 
-''' TESTING PREDICTIONS ACROSS EPOCHS '''
-epoch_sweep(args,
-            vangan_model,
-            plotter,
-            test_path='/PATH/TO/TEST/DATA/',  # Can use imaging_data.partition['testing']
-            start=100,
-            end=200,
-            segmentation=True  # Set to False if fake imaging is wanted
-            )
 
 ''' SEGMENTING NEW IMAGES '''
 # Alternatively, to run VANGAN on a directory of images (saved as .npy) using the following example script

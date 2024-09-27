@@ -2,23 +2,35 @@ import tensorflow as tf
 import numpy as np
 from utils import min_max_norm_tf, z_score_norm_tf
 from clDice_func import soft_dice_cldice_loss
+from cbDice_func import centreline_boundary_dice_loss_3d
 
 
 @tf.function
 def reduce_mean(self, inputs, axis=None, keepdims=False):
     """
     Compute the mean of the inputs tensor along the given axis and divide by the global batch size.
-    
+
     Args:
     - inputs: A tensor of values to compute the mean on.
     - axis: The dimensions along which to compute the mean. If None (default), compute the mean over all dimensions.
     - keepdims: If True, retains the reduced dimensions with length 1. If False (default), the reduced dimensions are removed.
-    
+
     Returns:
     - A tensor with the mean of the inputs tensor along the given axis divided by the global batch size.
     """
 
-    arr = tf.reduce_mean(inputs, axis=axis, keepdims=keepdims)
+    # Validate axes to ensure they're within the correct range of the input tensor's rank
+    if axis is not None:
+        # Ensure valid axis values
+        input_rank = len(inputs.shape)
+        valid_axes = [ax for ax in axis if ax < input_rank]
+    else:
+        valid_axes = None  # Reduce over all dimensions if no axis is specified
+
+    # Compute the mean over the valid axes
+    arr = tf.reduce_mean(inputs, axis=valid_axes, keepdims=keepdims)
+
+    # Return the sum divided by the global batch size
     return tf.reduce_sum(arr) / self.global_batch_size
 
 
@@ -67,6 +79,49 @@ def MSE(self, y_true, y_pred):
     """
     return reduce_mean(self, tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
 
+@tf.function
+def custom_mse_loss(self, y_true, y_pred, focus='standard', focus_weight=10.0, mid_range_weight=0.5):
+    """
+    Custom MSE loss function where we can focus on pixel values in a certain region.
+
+    Parameters:
+    - y_true: The ground truth images (tensor).
+    - y_pred: The predicted images (tensor).
+    - focus: Can be 'standard', 'low', or 'high' to choose which part of the pixel values to focus on.
+        - 'standard': regular MSE
+        - 'low': focus more on values near -1
+        - 'high': focus more on values near 1
+    - focus_weight: A scalar that controls the weight given to the focused region (default is 5.0).
+
+    Returns:
+    - Tensor representing the computed loss.
+    """
+
+    if focus == 'standard':
+        return self.MSE(y_true, y_pred, axis=list(range(1, len(y_true.shape))))  # Standard MSE without focusing on any specific region
+
+    elif focus == 'low':
+        # Focus on lower pixel values (near -1)
+        low_focus_weight = tf.where(y_true < 0, focus_weight, 1.0)
+        low_mse_loss = reduce_mean(self, low_focus_weight * tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
+        return low_mse_loss
+
+    elif focus == 'high':
+        # Focus on higher pixel values (near 1)
+        high_focus_weight = tf.where(y_true > 0, focus_weight, 1.0)
+        high_mse_loss = reduce_mean(self, high_focus_weight * tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
+        return high_mse_loss
+
+    elif focus == 'low_high':
+        # Assign higher weight to both low (negative) and high (positive) pixel values
+        low_focus_weight = tf.where(y_true < -0.5, focus_weight, mid_range_weight)  # For values < -0.5
+        high_focus_weight = tf.where(y_true > 0.5, focus_weight, mid_range_weight)  # For values > 0.5
+
+        # Combine weights for all regions
+        combined_weights = low_focus_weight + high_focus_weight
+
+        return reduce_mean(self, combined_weights * tf.square(y_true - y_pred), axis=list(range(1, len(y_true.shape))))
+
 
 @tf.function
 def L4(self, y_true, y_pred):
@@ -84,80 +139,65 @@ def L4(self, y_true, y_pred):
 
 
 @tf.function
-def ssim_loss_3d(y_true, y_pred, max_val=1.0, filter_size=3, filter_sigma=1.5, k1=0.01, k2=0.03):
+def ssim_loss(y_true, y_pred, max_val=1.0, filter_size=3, filter_sigma=1.5, k1=0.01, k2=0.03, dim=2):
+    """
+    SSIM loss function that supports both 2D and 3D inputs.
+
+    Args:
+    - y_true: Ground truth tensor.
+    - y_pred: Predicted tensor.
+    - max_val: Maximum possible value of the image.
+    - filter_size: Size of the Gaussian filter.
+    - filter_sigma: Standard deviation of the Gaussian filter.
+    - k1: Constant to stabilize the weak denominator (default: 0.01).
+    - k2: Constant to stabilize the weak denominator (default: 0.03).
+    - dim: Input dimensionality (2 for 2D inputs, 3 for 3D inputs).
+
+    Returns:
+    - SSIM loss value.
+    """
+
     # Create Gaussian filter
     def gaussian_filter(size, sigma):
         grid = tf.range(-size // 2 + 1, size // 2 + 1, dtype=tf.float32)
         gaussian_filter = tf.exp(-0.5 * (grid / sigma) ** 2) / (sigma * tf.sqrt(2.0 * np.pi))
         return gaussian_filter / tf.reduce_sum(gaussian_filter)
 
-    # Create 3D Gaussian filter
-    filter_3d = gaussian_filter(filter_size, filter_sigma)
-    filter_3d = tf.einsum('i,j,k->ijk', filter_3d, filter_3d, filter_3d)
-    filter_3d = filter_3d[:, :, :, tf.newaxis, tf.newaxis]
+    # Create the appropriate Gaussian filter for 2D or 3D
+    filter_1d = gaussian_filter(filter_size, filter_sigma)
 
-    # Compute mean and variance
-    mu_true = tf.nn.conv3d(y_true, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME')
-    mu_pred = tf.nn.conv3d(y_pred, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME')
+    if dim == 3:
+        # Create 3D Gaussian filter
+        filter_nd = tf.einsum('i,j,k->ijk', filter_1d, filter_1d, filter_1d)
+        filter_nd = filter_nd[:, :, :, tf.newaxis, tf.newaxis]
+        conv_fn = tf.nn.conv3d
+        strides = [1, 1, 1, 1, 1]
+    else:
+        # Create 2D Gaussian filter
+        filter_nd = tf.einsum('i,j->ij', filter_1d, filter_1d)
+        filter_nd = filter_nd[:, :, tf.newaxis, tf.newaxis]
+        conv_fn = tf.nn.conv2d
+        strides = [1, 1, 1, 1]
+
+    # Compute mean and variance using the appropriate convolution function
+    mu_true = conv_fn(y_true, filter_nd, strides=strides, padding='SAME')
+    mu_pred = conv_fn(y_pred, filter_nd, strides=strides, padding='SAME')
     mu_true_sq = mu_true ** 2
     mu_pred_sq = mu_pred ** 2
     mu_true_pred = mu_true * mu_pred
 
-    sigma_true_sq = tf.nn.conv3d(y_true ** 2, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_true_sq
-    sigma_pred_sq = tf.nn.conv3d(y_pred ** 2, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_pred_sq
-    sigma_true_pred = tf.nn.conv3d(y_true * y_pred, filter_3d, strides=[1, 1, 1, 1, 1], padding='SAME') - mu_true_pred
+    sigma_true_sq = conv_fn(y_true ** 2, filter_nd, strides=strides, padding='SAME') - mu_true_sq
+    sigma_pred_sq = conv_fn(y_pred ** 2, filter_nd, strides=strides, padding='SAME') - mu_pred_sq
+    sigma_true_pred = conv_fn(y_true * y_pred, filter_nd, strides=strides, padding='SAME') - mu_true_pred
 
     c1 = (k1 * max_val) ** 2
     c2 = (k2 * max_val) ** 2
 
     ssim_map = (2 * mu_true_pred + c1) * (2 * sigma_true_pred + c2) / (
-                (mu_true_sq + mu_pred_sq + c1) * (sigma_true_sq + sigma_pred_sq + c2))
+            (mu_true_sq + mu_pred_sq + c1) * (sigma_true_sq + sigma_pred_sq + c2))
 
     # Compute the mean SSIM loss across the batch
     return 1.0 - ssim_map
-
-
-@tf.function
-def wasserstein_loss(prob_real_is_real, prob_fake_is_real):
-    """
-    Compute the Wasserstein loss between the probabilities that the real inputs are real and the generated inputs are real.
-
-    Args:
-    - prob_real_is_real: A tensor representing the probability that the real inputs are real.
-    - prob_fake_is_real: A tensor representing the probability that the generated inputs are real.
-
-    Returns:
-    - A scalar tensor representing the Wasserstein loss between the two input probability tensors.
-    """
-    return tf.reduce_mean(prob_real_is_real - prob_fake_is_real)
-
-
-@tf.function
-def matched_crop(self, stack, axis=None, rescale=False):
-    """
-    Randomly crop the input tensor `stack` (which is compose of two image stacks) along a specified axis and return the resulting cropped tensors.
-
-    Args:
-    - stack: A tensor to be cropped.
-    - axis: The axis along which to crop the input tensor. If axis=1, the input tensor will be cropped horizontally; if axis=3, it will be cropped vertically. Defaults to None.
-    - rescale: A Boolean value indicating whether to rescale the resulting tensor values between 0 and 1. Defaults to False.
-
-    Returns:
-    - A tuple containing two cropped tensors of the same shape as the input tensor.
-    """
-    if axis == 1:
-        shape = (self.batch_size, 2 * self.img_size[1], self.img_size[2], 1, self.channels)
-        raxis = 3
-    elif axis == 3:
-        shape = (self.batch_size, 1, self.img_size[2], 2 * self.img_size[3], self.channels)
-        raxis = 1
-        axis -= 1
-
-    arr = tf.squeeze(tf.image.random_crop(stack, size=shape),
-                     axis=raxis)
-    if rescale:
-        arr = min_max_norm_tf(arr)
-    return tf.split(arr, num_or_size_splits=2, axis=axis)
 
 
 @tf.function
@@ -177,17 +217,21 @@ def cycle_loss(self, real_image, cycled_image, typ=None):
     if typ is None:
         return MAE(self, real_image, cycled_image) * self.lambda_cycle
     elif typ == "mse":
+        # return custom_mse_loss(self, real_image, cycled_image) * self.lambda_cycle
         return MSE(self, real_image, cycled_image) * self.lambda_cycle
     elif typ == "L4":
-        return L4(self,
-                  real_image,
-                  cycled_image) * self.lambda_cycle
+        return L4(self, real_image, cycled_image) * self.lambda_cycle
     else:
-        real = min_max_norm_tf(real_image, axis=(1, 2, 3, 4))
-        cycled = min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4))
+        # Dynamically determine axes based on tensor rank
+        image_rank = len(real_image.shape)
+        valid_axes = list(range(1, image_rank))  # All axes except batch dimension (axis 0)
+
+        real = min_max_norm_tf(real_image, axis=valid_axes)
+        cycled = min_max_norm_tf(cycled_image, axis=valid_axes)
+
         loss_obj = tf.keras.losses.BinaryCrossentropy(from_logits=False, reduction=tf.keras.losses.Reduction.NONE)
-        # loss_obj = tf.keras.losses.BinaryFocalCrossentropy(from_logits=False, reduction=tf.keras.losses.Reduction.NONE)
-        return reduce_mean(self, loss_obj(real, cycled)) * self.lambda_cycle
+
+        return reduce_mean(self, loss_obj(real, cycled), axis=valid_axes) * self.lambda_cycle
 
 
 @tf.function
@@ -202,9 +246,13 @@ def cycle_reconstruction(self, real_image, cycled_image):
     Returns:
     - loss: float Tensor, representing the per sample cycle reconstruction loss
     """
+    # Dynamically determine axes based on tensor rank
+    image_rank = len(real_image.shape)
+    valid_axes = list(range(1, image_rank))  # All axes except batch dimension (axis 0)
     return reduce_mean(self,
-                       ssim_loss_3d(min_max_norm_tf(real_image, axis=(1, 2, 3, 4)),
-                                    min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4)), max_val=1.0)
+                       ssim_loss(min_max_norm_tf(real_image, axis=valid_axes),
+                                    min_max_norm_tf(cycled_image, axis=valid_axes), max_val=1.0),
+                       axis=list(range(1, len(real_image.shape)))
                        ) * self.lambda_reconstruction
 
 
@@ -220,9 +268,11 @@ def cycle_seg_loss(self, real_image, cycled_image):
     Returns:
     - a scalar tensor representing the segmentation loss
     """
-    real = min_max_norm_tf(real_image, axis=(1, 2, 3, 4))
-    cycled = min_max_norm_tf(cycled_image, axis=(1, 2, 3, 4))
-    cl_loss_obj = soft_dice_cldice_loss()
+    image_rank = len(real_image.shape)
+    valid_axes = list(range(1, image_rank))  # All axes except batch dimension (axis 0)
+    real = min_max_norm_tf(real_image, axis=valid_axes)
+    cycled = min_max_norm_tf(cycled_image, axis=valid_axes)
+    cl_loss_obj = centreline_boundary_dice_loss_3d()
     return cl_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
 
 
@@ -246,7 +296,7 @@ def identity_loss(self, real_image, same_image, typ=None):
             real = min_max_norm_tf(real_image)
             same = min_max_norm_tf(same_image)
             loss_obj = soft_dice_cldice_loss()
-            # bf_loss_obj = tf.keras.losses.BinaryFocalCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)
+            # loss_obj = tf.keras.losses.BinaryFocalCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)
             # id_loss = reduce_mean(self, bf_loss_obj(real, same_image)) * self.lambda_identity
             spat_loss = reduce_mean(self, loss_obj(real, same)) * self.lambda_identity
             return spat_loss
@@ -270,6 +320,8 @@ def generator_loss_fn(self, fake_image, typ=None, from_logits=True):
     Returns:
         tf.Tensor: The generator loss.
     """
+    image_rank = len(fake_image.shape)
+    valid_axes = list(range(1, image_rank))  # All axes except batch dimension (axis 0)
     if typ is None:
         return MSE(self, tf.ones_like(fake_image), fake_image)
     else:
@@ -281,9 +333,9 @@ def generator_loss_fn(self, fake_image, typ=None, from_logits=True):
                                                                reduction=tf.keras.losses.Reduction.NONE)
         fake = fake_image
         if not from_logits:
-            fake = min_max_norm_tf(fake, axis=(1, 2, 3, 4))
+            fake = min_max_norm_tf(fake, axis=valid_axes)
         loss = loss_obj(tf.ones_like(fake_image), fake)
-        return reduce_mean(self, loss)
+        return reduce_mean(self, loss, axis=list(range(1, len(fake_image.shape))))
 
 
 @tf.function
@@ -319,37 +371,4 @@ def discriminator_loss_fn(self, real_image, fake_image, typ=None, from_logits=Tr
             real = min_max_norm_tf(real)
             fake = min_max_norm_tf(fake)
         loss = (loss_obj(tf.ones_like(real), real) + loss_obj(tf.zeros_like(fake), fake)) * 0.5
-        return reduce_mean(self, loss)
-
-
-def wasserstein_discriminator_loss(self, prob_real_is_real, prob_fake_is_real):
-    """Computes the Wassertein-GAN loss as minimized by the discriminator.
-    From paper :
-     WasserteinGAN : https://arxiv.org/pdf/1701.07875.pdf
-     by Martin Arjovsky, Soumith Chintala and Léon Bottou
-    Args:
-        prob_real_is_real: The discriminator's estimate that images actually
-            drawn from the real domain are in fact real.
-        prob_fake_is_real: The discriminator's estimate that generated images
-            made to look like real images are real.
-    Returns:
-        The total W-GAN loss.
-    """
-    return -reduce_mean(self, prob_real_is_real - prob_fake_is_real)
-
-
-def wasserstein_generator_loss(self, prob_fake_is_real):
-    """Computes the Wassertein-GAN loss as minimized by the generator.
-    From paper :
-     WasserteinGAN : https://arxiv.org/pdf/1701.07875.pdf
-     by Martin Arjovsky, Soumith Chintala and Léon Bottou
-    Args:
-        prob_real_is_real: The discriminator's estimate that images actually
-            drawn from the real domain are in fact real.
-        prob_fake_is_real: The discriminator's estimate that generated images
-            made to look like real images are real.
-    Returns:
-        The total W-GAN loss.
-    """
-
-    return -reduce_mean(self, prob_fake_is_real)
+        return reduce_mean(self, loss, axis=list(range(1, len(real_image.shape))))

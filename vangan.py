@@ -2,19 +2,16 @@ import os
 import utils
 import tensorflow as tf
 from tqdm import tqdm
-from generator import get_resnet_generator
+from resnet_model import resnet
 from discriminator import get_discriminator
 from loss_functions import (generator_loss_fn,
                             discriminator_loss_fn,
                             cycle_loss,
                             identity_loss,
                             cycle_seg_loss,
-                            wasserstein_generator_loss,
-                            wasserstein_discriminator_loss,
-                            reduce_mean,
                             cycle_reconstruction)
 from vnet_model import custom_vnet
-from resunet_model import ResUNet
+from res_unet_model import res_unet
 
 
 class VanGan:
@@ -22,24 +19,23 @@ class VanGan:
             self,
             args,
             strategy,
-            lambda_cycle=10.0,
-            lambda_identity=5,
-            lambda_reconstruction=5,
-            lambda_topology=5,
-            gen_i2s='resnet',
-            gen_s2i='resnet',
+            lambda_cycle=20.0,
+            lambda_identity=10.,
+            lambda_reconstruction=5.,
+            lambda_topology=5.,
+            gen_i2s='default',
+            gen_s2i='default',
             semi_supervised=False,
-            wasserstein=False,
-            ncritic=5,
-            gp_weight=10.0
+            joint_cycle=tf.Variable(0., trainable=False, dtype=tf.float32, name="shared_cycle")
     ):
         self.strategy = strategy
+        self.train_steps = args.train_steps
         self.n_devices = args.N_DEVICES
         self.img_size = args.INPUT_IMG_SIZE
         self.lambda_cycle = lambda_cycle
-        self.lambda_identity = lambda_identity
-        self.lambda_reconstruction = lambda_reconstruction
-        self.lambda_topology = lambda_topology
+        self.lambda_identity = tf.Variable(lambda_identity, trainable=False, dtype=tf.float32, name="lambda_identity")
+        self.lambda_reconstruction = tf.Variable(lambda_reconstruction, trainable=False, dtype=tf.float32, name="lambda_reconstruction")
+        self.lambda_topology = tf.Variable(lambda_topology, trainable=False, dtype=tf.float32, name="lambda_topology")
         self.channels = args.CHANNELS
         self.gen_i2s_typ = gen_i2s
         self.gen_s2i_typ = gen_s2i
@@ -58,23 +54,17 @@ class VanGan:
         self.batch_size = args.BATCH_SIZE
         self.cycle_loss_fn = cycle_loss
         self.identity_loss_fn = identity_loss
-        self.wasserstein = wasserstein
-        self.ncritic = ncritic
-        self.icritic = 1
-        self.initModel = True
-        self.updateGen = True
-        self.gp_weight = gp_weight
-        self.wasserstein_generator_loss = wasserstein_generator_loss
-        self.wasserstein_discriminator_loss = wasserstein_discriminator_loss
         self.generator_loss_fn = generator_loss_fn
         self.discriminator_loss_fn = discriminator_loss_fn
         self.identity_loss_fn = identity_loss
         self.seg_loss_fn = cycle_seg_loss
         self.reconstruction_loss = cycle_reconstruction
         self.decayed_noise_rate = 0.5
-        self.current_epoch = 0
+        self.current_epoch = tf.Variable(0, trainable=False, dtype=tf.int64, name="current_epoch")
         self.layer_noise = 0.1
         self.checkpoint_loaded = False
+        self.shared_cycle = joint_cycle
+        self.identity_off = tf.Variable(0., trainable=False, dtype=tf.float32, name="identity_off")
 
         # create checkpoint directory
         self.checkpoint_dir = os.path.join(args.output_dir, 'checkpoints')
@@ -85,83 +75,34 @@ class VanGan:
         # Initialize generator & discriminator
         with self.strategy.scope():
 
-            if self.gen_i2s_typ == 'resnet':
-                self.gen_IS = get_resnet_generator(
-                    input_img_size=self.subvol_patch_size,
-                    batch_size=self.global_batch_size,
-                    name='generator_IS',
-                    num_downsampling_blocks=3,
-                    num_upsample_blocks=3
-                )
-            elif self.gen_i2s_typ == 'vnet':
-                self.gen_IS = custom_vnet(
-                    input_shape=self.subvol_patch_size,
-                    activation='relu',
-                    use_batch_norm=False,
-                    upsample_mode='upsample',
-                    dropout=0.5,
-                    dropout_change_per_layer=0.0,
-                    dropout_type='spatial',
-                    use_dropout_on_upsampling=False,
-                    use_attention_gate=False,
-                    filters=32,
-                    num_layers=4,
-                    output_activation='tanh',
-                )
-            elif self.gen_i2s_typ == 'resUnet':
-                self.gen_IS = ResUNet(
+            # Default generator architecture = residual U-net
+            if self.gen_i2s_typ == 'default':
+                self.gen_IS = res_unet(
                     input_shape=self.subvol_patch_size,
                     upsample_mode='simple',
-                    dropout=0.1,
-                    dropout_change_per_layer=0.1,
+                    dropout=0.,
+                    dropout_change_per_layer=0.,
                     dropout_type='none',
                     use_attention_gate=False,
                     filters=16,
                     num_layers=4,
-                    # output_activation=None,
+                    dim=self.dims
                 )
-            else:
-                raise ValueError('IS Generator type not recognised')
 
-            if self.gen_s2i_typ == 'resnet':
-                self.gen_SI = get_resnet_generator(
-                    input_img_size=self.subvol_patch_size,
-                    batch_size=self.global_batch_size,
-                    name='generator_SI',
-                    num_downsampling_blocks=3,
-                    num_upsample_blocks=3
-                )
-            elif self.gen_s2i_typ == 'vnet':
-                self.gen_SI = custom_vnet(
-                    input_shape=self.subvol_patch_size,
-                    activation='relu',
-                    use_batch_norm=True,
-                    upsample_mode='deconv',
-                    dropout=0.5,
-                    dropout_change_per_layer=0.0,
-                    dropout_type='spatial',
-                    use_dropout_on_upsampling=False,
-                    use_attention_gate=False,
-                    filters=16,
-                    num_layers=4,
-                    output_activation='tanh',
-                    addnoise=False
-                )
-            elif self.gen_s2i_typ == 'resUnet':
-                self.gen_SI = ResUNet(
+            if self.gen_s2i_typ == 'default':
+                self.gen_SI = res_unet(
                     input_shape=self.seg_subvol_patch_size,
                     upsample_mode='simple',
-                    dropout=0.1,
-                    dropout_change_per_layer=0.1,
+                    dropout=0.,
+                    dropout_change_per_layer=0.,
                     dropout_type='none',
                     use_attention_gate=False,
                     filters=16,
                     num_layers=4,
-                    # output_activation=None,
-                    use_input_noise=False
+                    use_input_noise=False,
+                    output_activation='tanh',
+                    dim=self.dims
                 )
-            else:
-                raise ValueError('SI Generator type not recognised')
 
             # Get the discriminators
             self.disc_I = get_discriminator(
@@ -171,12 +112,14 @@ class VanGan:
                 filters=64,
                 use_dropout=True,
                 dropout_rate=0.2,
-                wasserstein=self.wasserstein,
                 use_SN=False,
                 use_input_noise=True,
                 use_layer_noise=True,
-                noise_std=self.layer_noise
+                use_standardisation=False,
+                noise_std=self.layer_noise,
+                dim=self.dims
             )
+
             self.disc_S = get_discriminator(
                 input_img_size=self.seg_subvol_patch_size,
                 batch_size=self.global_batch_size,
@@ -184,55 +127,30 @@ class VanGan:
                 filters=64,
                 use_dropout=True,
                 dropout_rate=0.2,
-                wasserstein=self.wasserstein,
                 use_SN=False,
                 use_input_noise=True,
                 use_layer_noise=True,
-                noise_std=self.layer_noise
+                noise_std=self.layer_noise,
+                dim=self.dims
             )
 
             # Initialise optimizers
-            if self.wasserstein:
-
-                self.gen_I_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4, beta_1=0.,
-                                                                beta_2=0.9)  # , clipnorm=10.0)
-                self.gen_S_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4, beta_1=0.,
-                                                                beta_2=0.9)  # , clipnorm=10.0)
-                self.disc_I_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4, beta_1=0.,
-                                                                 beta_2=0.9)  # , clipnorm=10.0)
-                self.disc_S_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4, beta_1=0.,
-                                                                 beta_2=0.9)  # , clipnorm=10.0)
-
-            else:
-                # Initialise decay rates
-                self.dI_lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-                    2e-4,
-                    decay_steps=5 * self.train_steps,
-                    decay_rate=0.98,
-                    staircase=False)
-
-                self.dS_lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-                    2e-4,
-                    decay_steps=5 * self.train_steps,
-                    decay_rate=0.98,
-                    staircase=False)
-
-                self.gen_I_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
-                                                                beta_1=0.5,
-                                                                beta_2=0.9,
-                                                                clipnorm=100)
-                self.gen_S_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
-                                                                beta_1=0.5,
-                                                                beta_2=0.9,
-                                                                clipnorm=100)
-                self.disc_I_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
-                                                                 beta_1=0.5,
-                                                                 beta_2=0.9,
-                                                                 clipnorm=100)
-                self.disc_S_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
-                                                                 beta_1=0.5,
-                                                                 beta_2=0.9,
-                                                                 clipnorm=100)
+            self.gen_I_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
+                                                            beta_1=0.5,
+                                                            beta_2=0.9,
+                                                            clipnorm=10)
+            self.gen_S_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
+                                                            beta_1=0.5,
+                                                            beta_2=0.9,
+                                                            clipnorm=1)
+            self.disc_I_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
+                                                             beta_1=0.5,
+                                                             beta_2=0.9,
+                                                             clipnorm=1)
+            self.disc_S_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
+                                                             beta_1=0.5,
+                                                             beta_2=0.9,
+                                                             clipnorm=1)
 
             # Initialise checkpoint
             self.checkpoint = tf.train.Checkpoint(gen_IS=self.gen_IS,
@@ -267,6 +185,19 @@ class VanGan:
         else:
             print('Error: Checkpoint not found!')
 
+    def apply_seg_identity_loss(self, real_S, training):
+        return tf.cond(tf.equal(self.identity_off, 0.0),
+                       lambda: self.identity_loss_fn(self, real_S, self.gen_IS(real_S, training=training), typ='cldice'),
+                       lambda: 0.0)
+
+    def apply_imaging_identity_loss(self, real_I, training):
+        return tf.cond(tf.equal(self.identity_off, 0.0),
+                       lambda: self.identity_loss_fn(self, real_I, self.gen_SI(real_I, training=training)),
+                       lambda: 0.0)
+
+    def shared_cycle_loss(self, cycle_loss, vg_cycle_loss):
+        return tf.cond(tf.equal(self.shared_cycle, 1.0), lambda: cycle_loss + vg_cycle_loss, lambda: 0.0)
+
     def compute_losses(self, real_I, real_S, result, training=True):
         """
         Computes the losses for the VANGAN model using the given input images and model settings.
@@ -282,8 +213,7 @@ class VanGan:
 
         Raises:
             ValueError: If the `cycle_loss_fn`, `seg_loss_fn`, `reconstruction_loss`, `discriminator_loss_fn`,
-            `generator_loss_fn`, `wasserstein_discriminator_loss` or `wasserstein_generator_loss` are not
-            callable functions.
+            `generator_loss_fn` are not callable functions.
 
         """
 
@@ -291,25 +221,27 @@ class VanGan:
         # tf.debugging.check_numerics(real_I, 'real_I failure')
         # tf.debugging.check_numerics(real_S, 'real_S failure')
 
-        # A -> B
+        # if self.semi_supervised:
+        #     real_S, real_sim = tf.split(real_S, num_or_size_splits=2, axis=3)
+        #     tf.debugging.check_numerics(real_S, 'real_S failure')
+        #     tf.debugging.check_numerics(real_sim, 'real_sim failure')
+        #     fake_sim_seg = self.gen_IS(real_sim, training=training)
+        #     tf.debugging.check_numerics(fake_sim_seg, 'fake_sim_seg failure')
+        #     semi_seg_loss = self.seg_loss_fn(self, real_S, fake_sim_seg)
+
+        # I -> S
         fake_S = self.gen_IS(real_I, training=training)
-        # B -> A
+
+        # S -> I
         fake_I = self.gen_SI(real_S, training=training)
 
-        # Cycle loss
+        # Cycle losses
         cycled_S = self.gen_IS(fake_I, training=training)
-
-        cycle_loss_I = self.cycle_loss_fn(self, real_S, cycled_S, typ="bce")
-
-        seg_loss = self.seg_loss_fn(self, real_S, cycled_S)
         cycled_I = self.gen_SI(fake_S, training=training)
-        cycle_loss_S = self.cycle_loss_fn(self, real_I, cycled_I, typ='mse')
-
+        cycle_loss_ISI = self.cycle_loss_fn(self, real_I, cycled_I, typ='mse')
+        cycle_loss_SIS = self.cycle_loss_fn(self, real_S, cycled_S, typ="bce")
+        seg_loss = self.seg_loss_fn(self, real_S, cycled_S)
         reconstruction_loss = self.reconstruction_loss(self, real_I, cycled_I)
-
-        # Identity mapping
-        # id_SI_loss = self.identity_loss_fn(self, real_I, self.gen_SI(real_I, training=True))
-        # id_IS_loss = self.identity_loss_fn(self, real_S, self.gen_IS(real_S, training=True), typ='cldice')
 
         # Discriminator outputs         
         disc_real_S = self.disc_S(real_S, training=training)
@@ -319,63 +251,39 @@ class VanGan:
         disc_fake_I = self.disc_I(fake_I, training=training)
 
         # Generator & discriminator loss
-        if self.wasserstein:
-            gen_IS_loss = self.wasserstein_generator_loss(self, disc_fake_S)
-            gen_SI_loss = self.wasserstein_generator_loss(self, disc_fake_I)
-            disc_I_loss = self.wasserstein_discriminator_loss(self, disc_real_I, disc_fake_I)
-            disc_S_loss = self.wasserstein_discriminator_loss(self, disc_real_S, disc_fake_S)
-
-        else:
-            gen_IS_loss = self.generator_loss_fn(self, disc_fake_S, from_logits=True)
-            gen_SI_loss = self.generator_loss_fn(self, disc_fake_I, from_logits=True)
-            disc_I_loss = self.discriminator_loss_fn(self, disc_real_I, disc_fake_I, from_logits=True)
-            disc_S_loss = self.discriminator_loss_fn(self, disc_real_S, disc_fake_S, from_logits=True)
+        gen_IS_loss = self.generator_loss_fn(self, disc_fake_S, from_logits=True)
+        gen_SI_loss = self.generator_loss_fn(self, disc_fake_I, from_logits=True)
+        disc_I_loss = self.discriminator_loss_fn(self, disc_real_I, disc_fake_I, from_logits=True)
+        disc_S_loss = self.discriminator_loss_fn(self, disc_real_S, disc_fake_S, from_logits=True)
 
         # Total generator loss
-        total_loss_I = gen_IS_loss + cycle_loss_I + seg_loss  # + id_SI_loss
-        total_loss_S = gen_SI_loss + cycle_loss_S + reconstruction_loss_I  # + id_IS_loss
+        # if self.semi_supervised:
+        #     total_loss_I = gen_IS_loss + cycle_loss_SIS + seg_loss + semi_seg_loss
+        #     result.update({'semi_supervised_loss_IS': semi_seg_loss})
+        #     result.update({'combined_dice_score': 1. - (semi_seg_loss / 10.)})
+        # else:
+        total_loss_I = (gen_IS_loss + cycle_loss_SIS + seg_loss
+                        + self.shared_cycle_loss(cycle_loss_ISI, reconstruction_loss)
+                        + self.apply_seg_identity_loss(real_S, training))
+
+        total_loss_S = (gen_SI_loss + cycle_loss_ISI + reconstruction_loss
+                        + self.shared_cycle_loss(cycle_loss_SIS, seg_loss)
+                        + self.apply_imaging_identity_loss(real_I, training))
 
         result.update({
-            'total_IS_loss': total_loss_I,
-            'total_SI_loss': total_loss_S,
+            'total_I_loss': total_loss_I,
+            'total_S_loss': total_loss_S,
             'D_I_loss': disc_I_loss,
             'D_S_loss': disc_S_loss,
             'gen_IS_loss': gen_IS_loss,
             'gen_SI_loss': gen_SI_loss,
-            'cycle_gen_SIS_loss': cycle_loss_I,
-            'cycle_gen_ISI_loss': cycle_loss_S,
+            'cycle_gen_ISI_loss': cycle_loss_ISI,
+            'cycle_gen_SIS_loss': cycle_loss_SIS,
             'seg_loss': seg_loss,
-            'reconstruction_loss_I': reconstruction_loss_I,
-            # 'identity_IS': id_IS_loss,
-            # 'identity_SI': id_SI_loss
+            'reconstruction_loss': reconstruction_loss
         })
 
         return result, total_loss_I, total_loss_S, disc_I_loss, disc_S_loss, fake_I, fake_S
-
-    def gradient_penalty(self, real, fake, descrip='I'):
-        """
-        Computes the gradient penalty for the Wasserstein loss function. 
-
-        Parameters:
-        - real: the real input data (either A or B) with dimensions [batch_size, height, width, channels]
-        - fake: the generated data (either A or B) with dimensions [batch_size, height, width, channels]
-        - descrip: specifies which discriminator to use (either 'I' or 'S')
-
-        Returns:
-        - gp: the computed gradient penalty
-        """
-        alpha = tf.random.normal([self.batch_size, 1, 1, 1, 1], 0.0, 1.0)
-        diff = fake - real
-        interpolated = real + alpha * diff
-        if descrip == 'I':
-            pred = self.disc_I(interpolated, training=True)
-        else:
-            pred = self.disc_S(interpolated, training=True)
-        grads = tf.gradients(pred, interpolated)[0]
-        norm = tf.sqrt(tf.reduce_sum(tf.square(grads),
-                                     axis=[1, 2, 3, 4]) + 1.e-12)  # small constant add to prevent division by zero
-        gp = reduce_mean(self, (norm - 1.0) ** 2)
-        return gp
 
     def train_step(self, real_I, real_S):
         """
@@ -397,38 +305,12 @@ class VanGan:
                                                                                                                result,
                                                                                                                training=True)
 
-        if self.wasserstein:
-
-            if self.updateGen:
-                self.gen_I_optimizer.minimize(loss=total_loss_I,
-                                              var_list=self.gen_IS.trainable_variables,
-                                              tape=tape)
-                self.gen_S_optimizer.minimize(loss=total_loss_S,
-                                              var_list=self.gen_SI.trainable_variables,
-                                              tape=tape)
-
-            if not self.initModel:
-                gp = self.gradient_penalty(real_I, fake_I, descrip='A')
-                disc_I_loss = disc_I_loss + gp * self.gp_weight
-
-                gp = self.gradient_penalty(real_S, fake_S, descrip='B')
-                disc_S_loss = disc_S_loss + gp * self.gp_weight
-
-            # clipping weights of discriminators as told in the
-            # WasserteinGAN paper to enforce Lipschitz constraint.
-            # clip_values = [-0.01, 0.01]
-            # self.clip_discriminator_A_var_op = [var.assign(tf.clip_by_value(var, clip_values[0], clip_values[1])) for
-            #    var in self.disc_I.trainable_variables]
-            # self.clip_discriminator_B_var_op = [var.assign(tf.clip_by_value(var, clip_values[0], clip_values[1])) for
-            #    var in self.disc_S.trainable_variables]
-
-        else:
-            self.gen_I_optimizer.minimize(loss=total_loss_I,
-                                          var_list=self.gen_IS.trainable_variables,
-                                          tape=tape)
-            self.gen_S_optimizer.minimize(loss=total_loss_S,
-                                          var_list=self.gen_SI.trainable_variables,
-                                          tape=tape)
+        self.gen_I_optimizer.minimize(loss=total_loss_I,
+                                      var_list=self.gen_IS.trainable_variables,
+                                      tape=tape)
+        self.gen_S_optimizer.minimize(loss=total_loss_S,
+                                      var_list=self.gen_SI.trainable_variables,
+                                      tape=tape)
 
         self.disc_I_optimizer.minimize(loss=disc_I_loss,
                                        var_list=self.disc_I.trainable_variables,
@@ -532,17 +414,10 @@ def train(ds, gan, summary, epoch: int, steps=None, desc=None, training=True):
         else:
             cntr += 1
         if training:
-            if gan.icritic % gan.ncritic == 0:
-                gan.updateGen = True
-                gan.icritic = 1
-            else:
-                gan.icritic += 1
             result = gan.distributed_train_step(x, y)
         else:
             result = gan.distributed_test_step(x, y)
         utils.append_dict(results, result)
-        gan.updateGen = False
-        gan.initModel = False
 
     for key, value in results.items():
         summary.scalar(key, tf.reduce_mean(value), epoch=epoch, training=training)

@@ -11,10 +11,10 @@ from tensorflow.keras.layers import (
     concatenate,
     multiply,
     add,
-    Activation,
+    Activation
 )
-import tensorflow_addons as tfa
 import tensorflow as tf
+import tensorflow_addons as tfa
 from building_blocks import ReflectionPadding3D
 from utils import min_max_norm_tf, rescale_arr_tf
 
@@ -127,6 +127,7 @@ def conv3d_block(
     if use_batch_norm:
         c = BatchNormalization()(c)
     else:
+        #c = GroupNormalization(groups=1, axis=-1)(c)
         c = tfa.layers.InstanceNormalization()(c)
     if dropout > 0.0:
         c = do(dropout)(c)
@@ -142,6 +143,7 @@ def conv3d_block(
     if use_batch_norm:
         c = BatchNormalization()(c)
     else:
+        #c = GroupNormalization(groups=1, axis=-1)(c)
         c = tfa.layers.InstanceNormalization()(c)
     return c
 

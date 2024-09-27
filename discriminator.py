@@ -1,7 +1,8 @@
 import tensorflow_addons as tfa
 from tensorflow import keras
 from tensorflow.keras import layers
-from building_blocks import downsample, ReflectionPadding3D
+from building_blocks import downsample, ReflectionPadding3D, ReflectionPadding2D, StandardisationLayer
+from utils import clip_images
 
 
 def get_discriminator(
@@ -18,14 +19,16 @@ def get_discriminator(
         use_layer_noise=False,
         use_standardisation=False,
         name=None,
-        noise_std=0.1
+        noise_std=0.1,
+        dim=3  # Use 3 for 3D, and 2 for 2D
 ):
     """
-    Creates a discriminator model for a 3D volumetric image using convolutional layers.
-    
+    Creates a discriminator model for both 2D and 3D images using convolutional layers.
+
     Args:
-    - input_img_size: Tuple, the shape of the input image in the form (height, width, depth, channels).
-                      Default is (64, 64, 512, 1).
+    - input_img_size: Tuple, the shape of the input image in the form (height, width, depth, channels) for 3D, or
+                      (height, width, channels) for 2D.
+                      Default is (64, 64, 512, 1) for 3D.
     - batch_size: Int, the batch size of the input images. Default is None.
     - filters: Int, the number of filters to use in the first layer of the model. Default is 64.
     - kernel_initializer: The initializer for the convolutional kernels. Default is None.
@@ -39,36 +42,44 @@ def get_discriminator(
     - name: String, name for the model. Default is None.
     - noise_std: Float, the standard deviation of the Gaussian noise to add to the input and/or convolutional layers.
                  Default is 0.1.
-                 
+    - dim: Int, whether to create a 2D or 3D model. Use `dim=3` for 3D and `dim=2` for 2D.
+
     Returns:
     - A tensorflow model representing the discriminator.
     """
 
+    # Adjust padding and convolution layers based on the input dimension
+    if dim == 3:
+        ReflectionPadding = ReflectionPadding3D
+        Conv = layers.Conv3D
+        GaussianNoise = layers.GaussianNoise
+    else:
+        ReflectionPadding = ReflectionPadding2D
+        Conv = layers.Conv2D
+        GaussianNoise = layers.GaussianNoise
+
     img_input = layers.Input(
         shape=input_img_size, batch_size=batch_size, name=name + "_img_input"
     )
-    x = ReflectionPadding3D()(img_input)
-    if use_input_noise:
-        x = layers.GaussianNoise(noise_std)(x)
 
-    if use_SN:
-        x = tfa.layers.SpectralNormalization(layers.Conv3D(
-            filters,
-            (4, 4, 4),
-            strides=(2, 2, 2),
-            padding="valid",
-            kernel_initializer=kernel_initializer,
-        ))(x)
+    if use_standardisation:
+        x = StandardisationLayer()(img_input)
+        x = ReflectionPadding()(x)
     else:
-        x = layers.Conv3D(
-            filters,
-            (4, 4, 4),
-            strides=(2, 2, 2),
-            padding="valid",
-            kernel_initializer=kernel_initializer,
-        )(x)
-        x = tfa.layers.InstanceNormalization(gamma_initializer=None)(x)
+        x = ReflectionPadding()(img_input)
 
+    if use_input_noise:
+        x = GaussianNoise(noise_std)(x)
+
+    x = Conv(
+        filters,
+        (4, 4, 4) if dim == 3 else (4, 4),
+        strides=(2, 2, 2) if dim == 3 else (2, 2),
+        padding="valid",
+        kernel_initializer=kernel_initializer,
+    )(x)
+
+    x = tfa.layers.InstanceNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
 
     num_filters = filters
@@ -79,36 +90,38 @@ def get_discriminator(
                 x,
                 filters=num_filters,
                 activation=layers.LeakyReLU(0.2),
-                kernel_size=(4, 4, 4),
-                strides=(2, 2, 2),
+                kernel_size=(4, 4, 4) if dim == 3 else (4, 4),
+                strides=(2, 2, 2) if dim == 3 else (2, 2),
                 use_dropout=use_dropout,
                 dropout_rate=dropout_rate,
                 use_spec_norm=use_SN,
                 use_layer_noise=use_layer_noise,
-                noise_std=noise_std
+                noise_std=noise_std,
+                dim=dim  # Pass dimension to downsample
             )
         else:
             x = downsample(
                 x,
                 filters=num_filters,
                 activation=layers.LeakyReLU(0.2),
-                kernel_size=(4, 4, 4),
-                strides=(1, 1, 1),
+                kernel_size=(4, 4, 4) if dim == 3 else (4, 4),
+                strides=(1, 1, 1) if dim == 3 else (1, 1),
                 use_dropout=use_dropout,
                 dropout_rate=dropout_rate,
                 padding='same',
                 use_spec_norm=use_SN,
                 use_layer_noise=use_layer_noise,
-                noise_std=noise_std
+                noise_std=noise_std,
+                dim=dim  # Pass dimension to downsample
             )
 
     if use_layer_noise:
-        x = layers.GaussianNoise(noise_std)(x)
+        x = GaussianNoise(noise_std)(x)
 
-    x = layers.Conv3D(
+    x = Conv(
         1,
-        (3, 3, 3),
-        strides=(1, 1, 1),
+        (3, 3, 3) if dim == 3 else (3, 3),
+        strides=(1, 1, 1) if dim == 3 else (1, 1),
         padding="same",
         kernel_initializer=kernel_initializer,
     )(x)

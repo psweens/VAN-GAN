@@ -8,7 +8,7 @@ from scipy import stats
 from joblib import Parallel, delayed
 import multiprocessing
 
-from utils import min_max_norm, check_nan, save_dict, load_dict, resize_volume
+from utils import min_max_norm, check_nan, save_dict, load_dict, resize_volume, load_volume
 
 
 class DataPreprocessor:
@@ -29,6 +29,7 @@ class DataPreprocessor:
         self.validate_files = None
         self.test_files = None
         self.partition = {}
+        self.data_type = 'float32'
 
         self.NUM_CORES = int(0.8 * num_cores)
         if args is not None:
@@ -100,7 +101,8 @@ class DataPreprocessor:
         # Split data into train/validate/test
         print('Splitting dataset ...')
         self.train_files, self.test_files = np.split(files, [int(len(files) * 0.9)])
-        self.train_files, self.validate_files = np.split(files, [int(len(files) * 0.8)])
+        self.train_files, self.validate_files = np.split(self.train_files,
+                                                         [int(len(self.train_files,) * 0.8)])
 
         # Save partitioned dataset
         self.partition['training'] = self.train_files
@@ -157,12 +159,13 @@ class DataPreprocessor:
             None
         """
 
-        stack = (sk.imread(os.path.join(self.raw_path, file))).astype('float32')
+        stack = load_volume(os.path.join(self.raw_path, file), datatype=self.data_type, normalise=True)
 
         file, ext = os.path.splitext(file)
         # if partition_id == 'A':
         if self.DIMENSIONS == 3:
             stack = np.transpose(stack, (1, 2, 0))
+
 
         # if self.partition_id == 'B':
         #     stack = get_vacuum(stack, self.DIMENSIONS) # Reduce bounding box to tree size
@@ -171,20 +174,20 @@ class DataPreprocessor:
             stack = self.preprocess_fn(stack)
 
         if not self.tiff_size == self.target_size and self.resize:
-            stack = (resize_volume(stack, self.target_size)).astype('float32')
-            if self.partition_id == 'S':
+            stack = (resize_volume(stack, self.target_size)).astype(self.data_type)
+            if self.partition_id == 'B':
                 stack[stack < 0.] = 0.0
                 stack[stack > 255.] = 255
 
         stack = min_max_norm(stack)
-        if self.partition_id == 'S':
+        if self.partition_id == 'B':
             mode, _ = stats.mode(stack, axis=None)
             if mode == 1:
                 stack -= 1.
                 stack = abs(stack)
         stack = (stack - 0.5) / 0.5
 
-        if self.partition_id == 'S':
+        if self.partition_id == 'B':
             stack[stack < 0.] = -1.0
             stack[stack >= 0.] = 1.0
 
@@ -199,10 +202,10 @@ class DataPreprocessor:
                     if self.DIMENSIONS == 2:
                         sk.imsave(arr_out, (stack * 127.5 + 127.5).astype('uint8'), bigtiff=False, check_contrast=False)
                     else:
-                        sk.imsave(arr_out, (np.transpose(stack, (2, 1, 0)) * 127.5 + 127.5).astype('uint8'),
+                        sk.imsave(arr_out, (np.transpose(stack, (2, 0, 1)) * 127.5 + 127.5).astype('uint8'),
                                   bigtiff=False, check_contrast=False)
 
-            if self.partition_id == 'S':
+            if self.partition_id == 'B':
                 np.save(os.path.join(self.main_dir, label + self.partition_id, file),
                         np.expand_dims(stack, axis=self.DIMENSIONS))
             else:

@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 from building_blocks import downsample, upsample, residual_block, ReflectionPadding3D
 
 
-def get_resnet_generator(
+def resnet(
         input_img_size=(64, 64, 512, 1),
         batch_size=None,
         filters=32,
@@ -37,7 +37,8 @@ def get_resnet_generator(
     for _ in range(1):
         x = layers.Conv3D(filters, (7, 7, 7), kernel_initializer=kernel_initializer,
                           use_bias=False)(x)
-        x = tfa.layers.InstanceNormalization(gamma_initializer=gamma_initializer)(x)
+        #x = layers.GroupNormalization(groups=1, axis=-1, gamma_initializer=gamma_initializer)(x)
+        x = tfa.layers.InstanceNormalization()(x)
         x = layers.Activation("relu")(x)
         x = layers.SpatialDropout3D(0.5)(x)
 
