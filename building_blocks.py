@@ -2,7 +2,13 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 from tensorflow.keras import layers
-
+from tensorflow.keras.layers import (
+    Conv2D,
+    Conv3D,
+    GaussianNoise,
+    SpatialDropout2D,
+    SpatialDropout3D
+)
 
 def npy_padding(x, padding=(1, 1, 1)):
     return np.pad(x, ((padding[0], padding[0]),
@@ -135,68 +141,75 @@ def downsample(
         filters,
         activation,
         kernel_initializer='he_normal',
-        kernel_size=(3, 3, 3),
-        strides=(2, 2, 2),
+        kernel_size=3,
+        strides=2,
         padding="valid",
         gamma_initializer=None,
         use_bias=False,
         use_dropout=True,
         dropout_rate=0.2,
         use_spec_norm=False,
-        padding_size=(1, 1, 1),
+        padding_size=1,
         use_layer_noise=False,
         noise_std=0.1,
-        dim=3  # Use 3 for 3D, 2 for 2D
+        dim=3
 ):
     """
-    Downsamples an input tensor using either 2D or 3D convolutional layers.
-
+    Downsamples an input tensor using a 3D convolutional layer.
+    
     Args:
         x (Tensor): Input tensor.
         filters (int): Number of output filters in the convolutional layer.
         activation (callable): Activation function to use after convolution.
         kernel_initializer (str, optional): Kernel initializer. Defaults to None.
-        kernel_size (tuple of ints, optional): Kernel size for the convolutional layer. Defaults to (3, 3).
-        strides (tuple of ints, optional): Strides for the convolutional layer. Defaults to (2, 2).
+        kernel_size (tuple of ints, optional): Kernel size for the convolutional layer. Defaults to (3, 3, 3).
+        strides (tuple of ints, optional): Strides for the convolutional layer. Defaults to (2, 2, 2).
         padding (str, optional): Padding mode. Defaults to "valid".
         gamma_initializer (str, optional): Gamma initializer for InstanceNormalization. Defaults to None.
         use_bias (bool, optional): Whether to use bias in the convolutional layer. Defaults to False.
         use_dropout (bool, optional): Whether to use dropout after activation. Defaults to True.
-        padding_size (tuple of ints, optional): Padding size for ReflectionPadding. Defaults to (1, 1).
-        use_layer_noise (bool, optional): Whether to add Gaussian noise after ReflectionPadding. Defaults to False.
+        use_spec_norm (bool, optional): Whether to use Spectral Normalization. Defaults to False.
+        padding_size (tuple of ints, optional): Padding size for ReflectionPadding3D. Defaults to (1, 1, 1).
+        use_layer_noise (bool, optional): Whether to add Gaussian noise after ReflectionPadding3D. Defaults to False.
         noise_std (float, optional): Standard deviation of Gaussian noise. Defaults to 0.1.
-        dim (int, optional): Whether the input is 2D or 3D. Use `dim=3` for 3D and `dim=2` for 2D.
-
+    
     Returns:
         Tensor: The downsampled tensor.
     """
-
-    PaddingLayer = ReflectionPadding3D if dim == 3 else ReflectionPadding2D
-    ConvLayer = layers.Conv3D if dim == 3 else layers.Conv2D
-    DropoutLayer = layers.SpatialDropout3D if dim == 3 else layers.SpatialDropout2D
+    ConvND = Conv3D if dim == 3 else Conv2D
+    padding_size = (padding_size, padding_size, padding_size) if dim == 3 else (padding_size, padding_size)
+    ReflectionPaddingND = ReflectionPadding3D if dim == 3 else ReflectionPadding2D
+    SpatialDropoutND = SpatialDropout3D if dim == 3 else SpatialDropout2D
 
     if padding == 'valid':
-        x = PaddingLayer(padding_size)(x)
+        x = ReflectionPaddingND(padding_size)(x)
 
     if use_layer_noise:
-        x = layers.GaussianNoise(noise_std)(x)
+        x = GaussianNoise(noise_std)(x)
 
-    x = ConvLayer(
-        filters,
-        kernel_size,
-        strides=strides,
-        kernel_initializer=kernel_initializer,
-        padding=padding,
-        use_bias=use_bias
-    )(x)
-
+    # if use_spec_norm:
+    #     x = tfa.layers.SpectralNormalization(layers.Conv3D(
+    #         filters,
+    #         kernel_size,
+    #         strides=strides,
+    #         kernel_initializer=kernel_initializer,
+    #         padding=padding,
+    #         use_bias=use_bias
+    #     ))(x)
+    # else:
+    x = ConvND(filters=filters,
+               kernel_size=kernel_size,
+               strides=strides,
+               kernel_initializer=kernel_initializer,
+               padding=padding,
+               use_bias=use_bias)(x)
+    # x = layers.GroupNormalization(groups=1, axis=-1, gamma_initializer=gamma_initializer)(x)
     x = tfa.layers.InstanceNormalization()(x)
 
     if activation:
         x = activation(x)
         if use_dropout:
-            x = DropoutLayer(dropout_rate)(x)
-
+            x = SpatialDropoutND(dropout_rate)(x)
     return x
 
 

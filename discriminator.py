@@ -1,8 +1,25 @@
 import tensorflow_addons as tfa
 from tensorflow import keras
 from tensorflow.keras import layers
-from building_blocks import downsample, ReflectionPadding3D, ReflectionPadding2D, StandardisationLayer
-from utils import clip_images
+from building_blocks import downsample, ReflectionPadding2D, ReflectionPadding3D
+from tensorflow.keras.layers import (
+    Activation,
+    Add,
+    concatenate,
+    Conv2D,
+    Conv3D,
+    Conv2DTranspose,
+    Conv3DTranspose,
+    Dropout,
+    GaussianNoise,
+    Input,
+    LeakyReLU,
+    Multiply,
+    SpatialDropout2D,
+    SpatialDropout3D,
+    UpSampling2D,
+    UpSampling3D
+)
 
 
 def get_discriminator(
@@ -20,15 +37,14 @@ def get_discriminator(
         use_standardisation=False,
         name=None,
         noise_std=0.1,
-        dim=3  # Use 3 for 3D, and 2 for 2D
+        dim=3
 ):
     """
-    Creates a discriminator model for both 2D and 3D images using convolutional layers.
-
+    Creates a discriminator model for a 3D volumetric image using convolutional layers.
+    
     Args:
-    - input_img_size: Tuple, the shape of the input image in the form (height, width, depth, channels) for 3D, or
-                      (height, width, channels) for 2D.
-                      Default is (64, 64, 512, 1) for 3D.
+    - input_img_size: Tuple, the shape of the input image in the form (height, width, depth, channels).
+                      Default is (64, 64, 512, 1).
     - batch_size: Int, the batch size of the input images. Default is None.
     - filters: Int, the number of filters to use in the first layer of the model. Default is 64.
     - kernel_initializer: The initializer for the convolutional kernels. Default is None.
@@ -42,89 +58,82 @@ def get_discriminator(
     - name: String, name for the model. Default is None.
     - noise_std: Float, the standard deviation of the Gaussian noise to add to the input and/or convolutional layers.
                  Default is 0.1.
-    - dim: Int, whether to create a 2D or 3D model. Use `dim=3` for 3D and `dim=2` for 2D.
-
+                 
     Returns:
     - A tensorflow model representing the discriminator.
     """
+    ConvND = Conv3D if dim == 3 else Conv2D
+    ReflectionPaddingND = ReflectionPadding3D if dim == 3 else ReflectionPadding2D
 
-    # Adjust padding and convolution layers based on the input dimension
-    if dim == 3:
-        ReflectionPadding = ReflectionPadding3D
-        Conv = layers.Conv3D
-        GaussianNoise = layers.GaussianNoise
-    else:
-        ReflectionPadding = ReflectionPadding2D
-        Conv = layers.Conv2D
-        GaussianNoise = layers.GaussianNoise
+    img_input = Input(shape=input_img_size,
+                      batch_size=batch_size,
+                      name=name + "_img_input")
 
-    img_input = layers.Input(
-        shape=input_img_size, batch_size=batch_size, name=name + "_img_input"
-    )
-
-    if use_standardisation:
-        x = StandardisationLayer()(img_input)
-        x = ReflectionPadding()(x)
-    else:
-        x = ReflectionPadding()(img_input)
+    x = ReflectionPaddingND()(img_input)
 
     if use_input_noise:
         x = GaussianNoise(noise_std)(x)
 
-    x = Conv(
-        filters,
-        (4, 4, 4) if dim == 3 else (4, 4),
-        strides=(2, 2, 2) if dim == 3 else (2, 2),
-        padding="valid",
-        kernel_initializer=kernel_initializer,
-    )(x)
-
+    # if use_SN:
+    #     x = tfa.layers.SpectralNormalization(layers.Conv3D(
+    #         filters,
+    #         (4, 4, 4),
+    #         strides=(2, 2, 2),
+    #         padding="valid",
+    #         kernel_initializer=kernel_initializer,
+    #     ))(x)
+    # else:
+    x = ConvND(filters=filters,
+               kernel_size=4,
+               strides=2,
+               padding="valid",
+               kernel_initializer=kernel_initializer)(x)
     x = tfa.layers.InstanceNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
+    #x = layers.GroupNormalization(groups=1, axis=-1)(x)
 
-    num_filters = filters
+    x = LeakyReLU(0.2)(x)
+
     for num_downsample_block in range(num_downsampling):
-        num_filters *= 2
+        filters *= 2
         if num_downsample_block < 2:
             x = downsample(
                 x,
-                filters=num_filters,
-                activation=layers.LeakyReLU(0.2),
-                kernel_size=(4, 4, 4) if dim == 3 else (4, 4),
-                strides=(2, 2, 2) if dim == 3 else (2, 2),
+                filters=filters,
+                activation=LeakyReLU(0.2),
+                kernel_size=4,
+                strides=4,
                 use_dropout=use_dropout,
                 dropout_rate=dropout_rate,
                 use_spec_norm=use_SN,
                 use_layer_noise=use_layer_noise,
                 noise_std=noise_std,
-                dim=dim  # Pass dimension to downsample
+                dim=dim
             )
         else:
             x = downsample(
                 x,
-                filters=num_filters,
-                activation=layers.LeakyReLU(0.2),
-                kernel_size=(4, 4, 4) if dim == 3 else (4, 4),
-                strides=(1, 1, 1) if dim == 3 else (1, 1),
+                filters=filters,
+                activation=LeakyReLU(0.2),
+                kernel_size=4,
+                strides=1,
                 use_dropout=use_dropout,
                 dropout_rate=dropout_rate,
                 padding='same',
                 use_spec_norm=use_SN,
                 use_layer_noise=use_layer_noise,
                 noise_std=noise_std,
-                dim=dim  # Pass dimension to downsample
+                dim=dim
             )
 
     if use_layer_noise:
         x = GaussianNoise(noise_std)(x)
 
-    x = Conv(
-        1,
-        (3, 3, 3) if dim == 3 else (3, 3),
-        strides=(1, 1, 1) if dim == 3 else (1, 1),
+    x = ConvND(
+        filters=1,
+        kernel_size=3,
+        strides=1,
         padding="same",
-        kernel_initializer=kernel_initializer,
-    )(x)
+        kernel_initializer=kernel_initializer)(x)
 
     if wasserstein:
         x = layers.Flatten()(x)
