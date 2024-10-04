@@ -21,283 +21,263 @@ from tensorflow.keras.layers import (
 from building_blocks import ReflectionPadding3D, ReflectionPadding2D
 
 
-def norm_act(x, act=True):
-    """
-    Apply instance normalization and activation function (ReLU by default) to input tensor.
-    """
-    x = tfa.layers.InstanceNormalization()(x)
-    if act:
-        x = Activation("relu")(x)
-    return x
+class ResUNet(Model):
+    def __init__(self, input_shape, dim=3, upsample_mode='deconv', dropout=0.2,
+                 dropout_change_per_layer=0.0, dropout_type='none', kernel_initializer='he_normal',
+                 use_attention_gate=False, filters=16, num_layers=4, output_activation='tanh',
+                 use_input_noise=False):
+        super(ResUNet, self).__init__()
+        self.dim = dim
+        self.upsample_mode = upsample_mode
+        self.dropout = dropout
+        self.dropout_change_per_layer = dropout_change_per_layer
+        self.dropout_type = dropout_type
+        self.kernel_initializer = kernel_initializer
+        self.use_attention_gate = use_attention_gate
+        self.filters = filters
+        self.num_layers = num_layers
+        self.output_activation = output_activation
+        self.use_input_noise = use_input_noise
+        self.image_shape = input_shape
 
+        # Define the layer types based on the dimension
+        if self.dim == 3:
+            self.Conv = Conv3D
+            self.ConvTranspose = Conv3DTranspose
+            self.UpSampling = UpSampling3D
+            self.SpatialDropout = SpatialDropout3D
+            self.ReflectionPadding = ReflectionPadding3D
+        else:
+            self.Conv = Conv2D
+            self.ConvTranspose = Conv2DTranspose
+            self.UpSampling = UpSampling2D
+            self.SpatialDropout = SpatialDropout2D
+            self.ReflectionPadding = ReflectionPadding2D
 
-def conv_block(x,
-               filters,
-               kernel_size=3,
-               padding="valid",
-               strides=1,
-               kernel_initializer='he_normal',
-               dim=3):
-    """
-    A convolutional block that supports both 2D and 3D data by adjusting kernel and convolution type.
-    """
+        # Build the model
+        self.model = self.build_model()
 
-    ReflectionPaddingND = ReflectionPadding3D if dim == 3 else ReflectionPadding2D
-    ConvND = Conv3D if dim == 3 else Conv2D
+    def call(self, inputs, **kwargs):
+        return self.model(inputs)
 
-    conv = norm_act(x)
-    if padding == 'valid':
-        conv = ReflectionPaddingND()(conv)
+    def build_model(self):
+        f = [self.filters, self.filters * 2, self.filters * 4, self.filters * 8, self.filters * 16]
+        inputs = Input(self.image_shape)
+        skip_layers = []
 
-    conv = ConvND(filters=filters,
-                  kernel_size=kernel_size,
-                  padding=padding,
-                  strides=strides,
-                  kernel_initializer=kernel_initializer)(conv)
+        x = inputs
 
-    return conv
+        if self.use_input_noise:
+            x = GaussianNoise(0.2)(x)
 
+        x = self.stem(x, f[0], dim=self.dim)
+        skip_layers.append(x)
 
-def stem(x,
-         filters,
-         kernel_size=3,
-         padding="valid",
-         strides=1,
-         dim=3):
-    """
-    The stem operation, generalized to handle both 2D and 3D input.
-    """
-    ConvND = Conv3D if dim == 3 else Conv2D
-    ReflectionPaddingND = ReflectionPadding3D if dim == 3 else ReflectionPadding2D
+        # Encoder
+        for e in range(1, self.num_layers + 1):
+            x = self.residual_block(x,
+                                    filters=f[e],
+                                    strides=2,
+                                    kernel_initializer=self.kernel_initializer,
+                                    dropout_type=self.dropout_type,
+                                    dropout=self.dropout + (e - 1) * self.dropout_change_per_layer, dim=self.dim)
+            skip_layers.append(x)
 
-    conv = ReflectionPaddingND()(x)
-    conv = ConvND(filters=filters,
-                  kernel_size=kernel_size,
-                  padding=padding,
-                  strides=strides)(conv)
+        # Bridge
+        x = self.conv_block(x, filters=f[-1], strides=1)
+        x = self.conv_block(x, filters=f[-1], strides=1)
 
-    conv = conv_block(conv,
-                      filters=filters,
+        # Decoder
+        for d in reversed(range(self.num_layers)):
+            x = self.upsample_concat_block(x, skip_layers[d], filters=f[d + 1])
+            x = self.residual_block(x, filters=f[d])
+
+        # Output Layer
+        x = self.final_layer(x)
+
+        model = Model(inputs, x)
+        model.summary()
+        return model
+
+    def conv_block(self,
+                   x,
+                   filters,
+                   kernel_size=3,
+                   strides=1,
+                   padding='valid'):
+        """
+        A convolutional block that supports both 2D and 3D data by adjusting kernel and convolution type.
+        """
+
+        x = self.norm_act(x)
+        if padding == 'valid':
+            x = self.ReflectionPadding()(x)
+
+        x = self.Conv(filters=filters,
                       kernel_size=kernel_size,
                       padding=padding,
                       strides=strides,
-                      dim=dim)
+                      kernel_initializer=self.kernel_initializer)(x)
+        return x
 
-    # Identity mapping
-    shortcut = ConvND(filters=filters,
-                      kernel_size=1,
-                      padding="same",
-                      strides=strides)(x)
+    def stem(self,
+             x,
+             filters,
+             kernel_size=3,
+             padding="valid",
+             strides=1,
+             dim=3):
+        """
+        The stem operation, generalized to handle both 2D and 3D input.
+        """
+        y = self.ReflectionPadding()(x)
+        y = self.Conv(filters=filters,
+                      kernel_size=kernel_size,
+                      padding=padding,
+                      strides=strides)(y)
 
-    shortcut = norm_act(shortcut,
-                        act=False)
-    output = Add()([conv, shortcut])
-    return output
+        y = self.conv_block(y,
+                            filters=filters,
+                            kernel_size=kernel_size,
+                            padding=padding,
+                            strides=strides)
 
+        # Identity mapping
+        shortcut = self.Conv(filters=filters,
+                             kernel_size=1,
+                             padding="same",
+                             strides=strides)(x)
 
-def residual_block(x,
-                   filters,
-                   kernel_size=3,
-                   padding="valid",
-                   strides=1,
-                   kernel_initializer='he_normal',
-                   dropout_type=None,
-                   dropout=None,
-                   dim=3):
-    """
-    Residual block that supports both 2D and 3D convolutions.
-    """
-    ConvND = Conv3D if dim == 3 else Conv2D
-    SpatialDropoutND = SpatialDropout3D if dim == 3 else SpatialDropout2D
+        shortcut = self.norm_act(shortcut, act=False)
+        output = Add()([y, shortcut])
+        return output
 
-    res = conv_block(x,
-                     filters=filters,
-                     kernel_size=kernel_size,
-                     padding=padding,
-                     strides=strides,
-                     kernel_initializer=kernel_initializer,
-                     dim=dim)
-    res = conv_block(res,
-                     filters=filters,
-                     kernel_size=kernel_size,
-                     padding=padding,
-                     strides=1,
-                     kernel_initializer=kernel_initializer,
-                     dim=dim)
+    def residual_block(self,
+                       x,
+                       filters,
+                       kernel_size=3,
+                       padding="valid",
+                       strides=1,
+                       kernel_initializer='he_normal',
+                       dropout_type=None,
+                       dropout=None,
+                       dim=3):
+        """
+        Residual block that supports both 2D and 3D convolutions.
+        """
 
-    # Identity mapping
-    shortcut = ConvND(filters,
-                      kernel_size=1,
-                      padding="same",
-                      strides=strides,
-                      kernel_initializer=kernel_initializer)(x)
+        res = self.conv_block(x,
+                              filters=filters,
+                              kernel_size=kernel_size,
+                              padding=padding,
+                              strides=strides)
+        res = self.conv_block(res,
+                              filters=filters,
+                              kernel_size=kernel_size,
+                              padding=padding,
+                              strides=1)
 
-    shortcut = norm_act(shortcut,
-                        act=False)
-    output = Add()([shortcut, res])
+        # Identity mapping
+        shortcut = self.Conv(filters,
+                             kernel_size=1,
+                             padding="same",
+                             strides=strides,
+                             kernel_initializer=kernel_initializer)(x)
 
-    if dropout_type == 'spatial':
-        output = SpatialDropoutND(dropout)(output)
-    elif dropout_type == 'standard':
-        output = Dropout(dropout)(output)
+        shortcut = self.norm_act(shortcut, act=False)
+        output = Add()([shortcut, res])
 
-    return output
+        if dropout_type == 'spatial':
+            output = self.SpatialDropout(dropout)(output)
+        elif dropout_type == 'standard':
+            output = Dropout(dropout)(output)
 
+        return output
 
-def attention_gate(x,
-                   g,
-                   inter_shape,
-                   dim=2):
-    """
-    Attention gate for U-Net-like architectures suited for segmentation.
-    Parameters:
-    - x: skip connection (input from encoder)
-    - g: gating signal (input from decoder)
-    - inter_shape: number of filters for intermediate convolutions
-    - dim: 2 for 2D, 3 for 3D
-    """
-    ConvND = Conv3D if dim == 3 else Conv2D
+    def upsample_concat_block(self,
+                              x,
+                              xskip,
+                              filters,
+                              use_attention_gate=False):
+        """
+        Upsample and concatenate block for U-Net with optional attention gates, supports both 2D and 3D.
+        """
+        if self.upsample_mode == 'deconv':
+            x = self.ReflectionPadding()(x)
+            x = self.ConvTranspose(filters=filters,
+                                   kernel_size=2,
+                                   strides=2,
+                                   padding='valid',
+                                   kernel_initializer=self.kernel_initializer)(x)
+        else:
+            x = self.UpSampling(size=2)(x)
 
-    # Theta_x -> convolution of the skip connection
-    theta_x = ConvND(filters=inter_shape,
-                     kernel_size=1,
-                     strides=1,
-                     padding='same')(x)
+        # Apply attention gate if specified
+        if use_attention_gate:
+            xskip = self.attention_gate(xskip, x, filters // 2)
 
-    # Phi_g -> convolution of the gating signal
-    phi_g = ConvND(filters=inter_shape,
-                   kernel_size=1,
-                   strides=1,
-                   padding='same')(g)
+        # Concatenate with skip connection
+        x = concatenate([x, xskip])
+        return x
 
-    # Add both convolutions
-    attn = Add()([theta_x, phi_g])
-    attn = LeakyReLU(0.2)(attn)
+    def norm_act(self, x, act=True):
+        """
+        Apply instance normalization and activation function (ReLU by default) to input tensor.
+        """
+        x = tfa.layers.InstanceNormalization()(x)
+        if act:
+            x = Activation("relu")(x)
+        return x
 
-    # Psi -> Convolution for generating the attention weights
-    psi = ConvND(filters=1,
-                 kernel_size=1,
-                 padding='same',
-                 activation='tanh')(attn)
+    def final_layer(self, x):
+        # Output layer logic here
+        if self.output_activation == 'norm':
+            x = self.Conv(filters=1,
+                          kernel_size=1,
+                          padding="same")(x)
+        else:
+            x = self.Conv(filters=1,
+                          kernel_size=1,
+                          padding="same",
+                          activation=self.output_activation)(x)
+        return x
 
-    # Multiply the attention map with the skip connection
-    x_attn = Multiply()([x, psi])
+    def attention_gate(self,
+                       x,
+                       g,
+                       inter_shape):
+        """
+        Attention gate for U-Net-like architectures suited for segmentation.
+        Parameters:
+        - x: skip connection (input from encoder)
+        - g: gating signal (input from decoder)
+        - inter_shape: number of filters for intermediate convolutions
+        - dim: 2 for 2D, 3 for 3D
+        """
+        # Theta_x -> convolution of the skip connection
+        theta_x = self.Conv(filters=inter_shape,
+                            kernel_size=1,
+                            strides=1,
+                            padding='same')(x)
 
-    return x_attn
+        # Phi_g -> convolution of the gating signal
+        phi_g = self.Conv(filters=inter_shape,
+                          kernel_size=1,
+                          strides=1,
+                          padding='same')(g)
 
+        # Add both convolutions
+        attn = Add()([theta_x, phi_g])
+        attn = LeakyReLU(0.2)(attn)
 
-# Update the upsample_concat_block function to include attention gates
-def upsample_concat_block(x,
-                          xskip,
-                          filters,
-                          kernel_initializer='he_normal',
-                          upsample_mode='deconv',
-                          use_attention_gate=False,
-                          dim=3):
-    """
-    Upsample and concatenate block for U-Net with optional attention gates, supports both 2D and 3D.
-    """
-    ConvNDTranspose = Conv3DTranspose if dim == 3 else Conv2DTranspose
-    ReflectionPaddingND = ReflectionPadding3D if dim == 3 else ReflectionPadding2D
-    UpSamplingND = UpSampling3D if dim == 3 else UpSampling2D
+        # Psi -> Convolution for generating the attention weights
+        psi = self.Conv(filters=1,
+                        kernel_size=1,
+                        padding='same',
+                        activation='tanh')(attn)
 
-    if upsample_mode == 'deconv':
-        x = ReflectionPaddingND()(x)
-        x = ConvNDTranspose(filters=filters,
-                            kernel_size=2,
-                            strides=2,
-                            padding='valid',
-                            kernel_initializer=kernel_initializer)(x)
-    else:
-        x = UpSamplingND(size=2)(x)
+        # Multiply the attention map with the skip connection
+        x_attn = Multiply()([x, psi])
 
-    # Apply attention gate if specified
-    if use_attention_gate:
-        xskip = attention_gate(xskip, x, filters // 2, dim=dim)
+        return x_attn
 
-    # Concatenate with skip connection
-    x = concatenate([x, xskip])
-    return x
-
-
-def res_unet(
-        input_shape,
-        dim=3,  # '3' for 3D, '2' for 2D
-        upsample_mode='deconv',  # 'deconv' or 'simple'
-        dropout=0.2,
-        dropout_change_per_layer=0.0,
-        dropout_type='none',
-        kernel_initializer='he_normal',
-        use_attention_gate=False,
-        filters=16,
-        num_layers=4,
-        output_activation='tanh',
-        use_input_noise=False
-):
-    """
-    Create a Residual U-Net model for either 2D or 3D input.
-    """
-    ConvND = Conv3D if dim == 3 else Conv2D
-
-    f = [filters, filters * 2, filters * 4, filters * 8, filters * 16]
-    inputs = Input(input_shape)
-    skip_layers = []
-
-    x = inputs
-
-    if use_input_noise:
-        x = GaussianNoise(0.2)(x)
-
-    x = stem(x, f[0], dim=dim)
-    skip_layers.append(x)
-
-    # Encoder
-    for e in range(1, num_layers + 1):
-        x = residual_block(x,
-                           filters=f[e],
-                           strides=2,
-                           kernel_initializer=kernel_initializer,
-                           dropout_type=dropout_type,
-                           dropout=dropout + (e - 1) * dropout_change_per_layer, dim=dim)
-        skip_layers.append(x)
-
-    # Bridge
-    x = conv_block(x,
-                   filters=f[-1],
-                   strides=1,
-                   kernel_initializer=kernel_initializer,
-                   dim=dim)
-    x = conv_block(x,
-                   filters=f[-1],
-                   strides=1,
-                   kernel_initializer=kernel_initializer,
-                   dim=dim)
-
-    # Decoder
-    for d in reversed(range(num_layers)):
-        x = upsample_concat_block(x,
-                                  skip_layers[d],
-                                  filters=f[d + 1],
-                                  kernel_initializer=kernel_initializer,
-                                  upsample_mode=upsample_mode,
-                                  use_attention_gate=use_attention_gate,
-                                  dim=dim)
-        x = residual_block(x,
-                           filters=f[d],
-                           kernel_initializer=kernel_initializer,
-                           dim=dim)
-
-    # Output Layer
-    if output_activation == 'norm':
-        x = ConvND(filters=1,
-                   kernel_size=1,
-                   padding="same")(x)
-    else:
-        x = ConvND(filters=1,
-                   kernel_size=1,
-                   padding="same",
-                   activation=output_activation)(x)
-
-    model = Model(inputs, x)
-    model.summary()
-    return model
