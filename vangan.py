@@ -3,7 +3,7 @@ import utils
 import tensorflow as tf
 from tqdm import tqdm
 from resnet_model import resnet
-from discriminator import get_discriminator
+from discriminator import ConvolutionalDiscriminator
 from loss_functions import (generator_loss_fn,
                             discriminator_loss_fn,
                             cycle_loss,
@@ -11,7 +11,7 @@ from loss_functions import (generator_loss_fn,
                             cycle_seg_loss,
                             cycle_reconstruction)
 from vnet_model import custom_vnet
-from res_unet_model import res_unet
+from res_unet_model import ResUNet
 
 
 class VanGan:
@@ -26,7 +26,6 @@ class VanGan:
             gen_i2s='default',
             gen_s2i='default',
             semi_supervised=False,
-            joint_cycle=tf.Variable(0., trainable=False, dtype=tf.float32, name="shared_cycle")
     ):
         self.strategy = strategy
         self.train_steps = args.train_steps
@@ -63,8 +62,9 @@ class VanGan:
         self.current_epoch = tf.Variable(0, trainable=False, dtype=tf.int64, name="current_epoch")
         self.layer_noise = 0.1
         self.checkpoint_loaded = False
-        self.shared_cycle = joint_cycle
-        self.identity_off = tf.Variable(0., trainable=False, dtype=tf.float32, name="identity_off")
+        self.shared_cycle = tf.Variable(False, dtype=tf.bool, trainable=False, name="shared_cycle")
+        self.identity_off = tf.Variable(False, dtype=tf.bool, trainable=False, name="identity_off")
+
 
         # create checkpoint directory
         self.checkpoint_dir = os.path.join(args.output_dir, 'checkpoints')
@@ -77,7 +77,7 @@ class VanGan:
 
             # Default generator architecture = residual U-net
             if self.gen_i2s_typ == 'default':
-                self.gen_IS = res_unet(
+                self.gen_IS = ResUNet(
                     input_shape=self.subvol_patch_size,
                     upsample_mode='simple',
                     dropout=0.,
@@ -86,11 +86,12 @@ class VanGan:
                     use_attention_gate=False,
                     filters=16,
                     num_layers=4,
+                    output_activation='tanh',
                     dim=self.dims
                 )
 
             if self.gen_s2i_typ == 'default':
-                self.gen_SI = res_unet(
+                self.gen_SI = ResUNet(
                     input_shape=self.seg_subvol_patch_size,
                     upsample_mode='simple',
                     dropout=0.,
@@ -105,7 +106,7 @@ class VanGan:
                 )
 
             # Get the discriminators
-            self.disc_I = get_discriminator(
+            self.disc_I = ConvolutionalDiscriminator(
                 input_img_size=self.subvol_patch_size,
                 batch_size=self.global_batch_size,
                 name='discriminator_I',
@@ -115,12 +116,11 @@ class VanGan:
                 use_SN=False,
                 use_input_noise=True,
                 use_layer_noise=True,
-                use_standardisation=False,
                 noise_std=self.layer_noise,
                 dim=self.dims
             )
 
-            self.disc_S = get_discriminator(
+            self.disc_S = ConvolutionalDiscriminator(
                 input_img_size=self.seg_subvol_patch_size,
                 batch_size=self.global_batch_size,
                 name='discriminator_S',
@@ -138,19 +138,19 @@ class VanGan:
             self.gen_I_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
                                                             beta_1=0.5,
                                                             beta_2=0.9,
-                                                            clipnorm=10)
+                                                            clipnorm=100)
             self.gen_S_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
                                                             beta_1=0.5,
                                                             beta_2=0.9,
-                                                            clipnorm=1)
+                                                            clipnorm=100)
             self.disc_I_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
                                                              beta_1=0.5,
                                                              beta_2=0.9,
-                                                             clipnorm=1)
+                                                             clipnorm=100)
             self.disc_S_optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4,
                                                              beta_1=0.5,
                                                              beta_2=0.9,
-                                                             clipnorm=1)
+                                                             clipnorm=100)
 
             # Initialise checkpoint
             self.checkpoint = tf.train.Checkpoint(gen_IS=self.gen_IS,
@@ -185,18 +185,26 @@ class VanGan:
         else:
             print('Error: Checkpoint not found!')
 
-    def apply_seg_identity_loss(self, real_S, training):
-        return tf.cond(tf.equal(self.identity_off, 0.0),
-                       lambda: self.identity_loss_fn(self, real_S, self.gen_IS(real_S, training=training), typ='cldice'),
-                       lambda: 0.0)
+    def apply_seg_identity_loss(self, real_S, training, typ=None):
+        return tf.cond(
+            tf.convert_to_tensor(self.identity_off) == tf.constant(False, dtype=tf.bool),
+            lambda: self.identity_loss_fn(self, real_S, self.gen_IS(real_S, training=training), typ=typ),
+            lambda: tf.constant(0.0)
+        )
 
-    def apply_imaging_identity_loss(self, real_I, training):
-        return tf.cond(tf.equal(self.identity_off, 0.0),
-                       lambda: self.identity_loss_fn(self, real_I, self.gen_SI(real_I, training=training)),
-                       lambda: 0.0)
+    def apply_imaging_identity_loss(self, real_I, training, typ=None):
+        return tf.cond(
+            tf.convert_to_tensor(self.identity_off) == tf.constant(False, dtype=tf.bool),
+            lambda: self.identity_loss_fn(self, real_I, self.gen_SI(real_I, training=training), typ=typ),
+            lambda: tf.constant(0.0)
+        )
 
     def shared_cycle_loss(self, cycle_loss, vg_cycle_loss):
-        return tf.cond(tf.equal(self.shared_cycle, 1.0), lambda: cycle_loss + vg_cycle_loss, lambda: 0.0)
+        return tf.cond(
+            tf.convert_to_tensor(self.shared_cycle) == tf.constant(True, dtype=tf.bool),
+            lambda: cycle_loss + vg_cycle_loss,
+            lambda: tf.constant(0.0)
+        )
 
     def compute_losses(self, real_I, real_S, result, training=True):
         """
@@ -206,32 +214,15 @@ class VanGan:
             real_I (tf.Tensor): A tensor containing the real images from the imaging domain.
             real_S (tf.Tensor): A tensor containing the real images from the segmentation domain.
             result (dict): A dictionary to store the loss values.
-            training (bool, optional): A flag indicating whether the model is being trained or not. Defaults to True.
+            training (bool, optional): A flag indicating whether the model is being trained or not.
+                                       Defaults to True.
 
         Returns:
             tuple: A tuple containing the updated result dictionary and the calculated losses.
-
-        Raises:
-            ValueError: If the `cycle_loss_fn`, `seg_loss_fn`, `reconstruction_loss`, `discriminator_loss_fn`,
-            `generator_loss_fn` are not callable functions.
-
         """
-
-        # Can be used to debug dataset numerics
-        # tf.debugging.check_numerics(real_I, 'real_I failure')
-        # tf.debugging.check_numerics(real_S, 'real_S failure')
-
-        # if self.semi_supervised:
-        #     real_S, real_sim = tf.split(real_S, num_or_size_splits=2, axis=3)
-        #     tf.debugging.check_numerics(real_S, 'real_S failure')
-        #     tf.debugging.check_numerics(real_sim, 'real_sim failure')
-        #     fake_sim_seg = self.gen_IS(real_sim, training=training)
-        #     tf.debugging.check_numerics(fake_sim_seg, 'fake_sim_seg failure')
-        #     semi_seg_loss = self.seg_loss_fn(self, real_S, fake_sim_seg)
 
         # I -> S
         fake_S = self.gen_IS(real_I, training=training)
-
         # S -> I
         fake_I = self.gen_SI(real_S, training=training)
 
@@ -243,33 +234,40 @@ class VanGan:
         seg_loss = self.seg_loss_fn(self, real_S, cycled_S)
         reconstruction_loss = self.reconstruction_loss(self, real_I, cycled_I)
 
-        # Discriminator outputs         
+        # Get identity losses
+        # seg_identity_loss = self.apply_seg_identity_loss(real_S, training, typ='cldice')  # seg. identity
+        imaging_identity_loss = self.apply_imaging_identity_loss(real_I, training)  # imaging identity
+
+        # Discriminator outputs
         disc_real_S = self.disc_S(real_S, training=training)
         disc_fake_S = self.disc_S(fake_S, training=training)
-
         disc_real_I = self.disc_I(real_I, training=training)
         disc_fake_I = self.disc_I(fake_I, training=training)
 
-        # Generator & discriminator loss
+        # Generator & discriminator losses
         gen_IS_loss = self.generator_loss_fn(self, disc_fake_S, from_logits=True)
         gen_SI_loss = self.generator_loss_fn(self, disc_fake_I, from_logits=True)
         disc_I_loss = self.discriminator_loss_fn(self, disc_real_I, disc_fake_I, from_logits=True)
         disc_S_loss = self.discriminator_loss_fn(self, disc_real_S, disc_fake_S, from_logits=True)
 
         # Total generator loss
-        # if self.semi_supervised:
-        #     total_loss_I = gen_IS_loss + cycle_loss_SIS + seg_loss + semi_seg_loss
-        #     result.update({'semi_supervised_loss_IS': semi_seg_loss})
-        #     result.update({'combined_dice_score': 1. - (semi_seg_loss / 10.)})
-        # else:
-        total_loss_I = (gen_IS_loss + cycle_loss_SIS + seg_loss
-                        + self.shared_cycle_loss(cycle_loss_ISI, reconstruction_loss)
-                        + self.apply_seg_identity_loss(real_S, training))
+        total_loss_I = (
+                gen_IS_loss
+                + cycle_loss_SIS
+                + seg_loss
+                + self.shared_cycle_loss(cycle_loss_ISI, reconstruction_loss)
+                #'+ seg_identity_loss  # add segmentation identity loss
+        )
 
-        total_loss_S = (gen_SI_loss + cycle_loss_ISI + reconstruction_loss
-                        + self.shared_cycle_loss(cycle_loss_SIS, seg_loss)
-                        + self.apply_imaging_identity_loss(real_I, training))
+        total_loss_S = (
+                gen_SI_loss
+                + cycle_loss_ISI
+                + reconstruction_loss
+                + self.shared_cycle_loss(cycle_loss_SIS, seg_loss)
+                + imaging_identity_loss  # add imaging identity loss
+        )
 
+        # Always include the total generator and discriminator losses
         result.update({
             'total_I_loss': total_loss_I,
             'total_S_loss': total_loss_S,
@@ -283,42 +281,58 @@ class VanGan:
             'reconstruction_loss': reconstruction_loss
         })
 
+        # Only include identity losses in result if identity is actually turned on (i.e., identity_off == False)
+        result.update({
+            'imaging_identity_loss': tf.cond(
+                tf.convert_to_tensor(self.identity_off) == tf.constant(False, dtype=tf.bool),
+                lambda: imaging_identity_loss,
+                lambda: tf.constant(0.0)
+            ),
+            # 'seg_identity_loss': tf.cond(
+            #     tf.convert_to_tensor(self.identity_off) == tf.constant(False, dtype=tf.bool),
+            #     lambda: seg_identity_loss,
+            #     lambda: tf.constant(0.0)
+            # )
+        })
+
         return result, total_loss_I, total_loss_S, disc_I_loss, disc_S_loss, fake_I, fake_S
 
     def train_step(self, real_I, real_S):
         """
-        Trains the VANGAN model using a single batch of input images.
-
-        Parameters:
-        - `self`: the VANGAN object.
-        - `real_I`: a batch of images from the imaging domain.
-        - `real_S`: a batch of images from the segmentation domain.
-
-        Returns:
-        - `result`: a dictionary containing the losses and metrics computed during training.
+        Trains the VANGAN model using a single batch of input images, ensuring gradients with NaNs are replaced with zeros.
         """
-
         result = {}
+
+        # Use a persistent tape since we'll compute multiple gradients from the same forward pass.
         with tf.GradientTape(persistent=True) as tape:
-            result, total_loss_I, total_loss_S, disc_I_loss, disc_S_loss, fake_I, fake_S = self.compute_losses(real_I,
-                                                                                                               real_S,
-                                                                                                               result,
-                                                                                                               training=True)
+            (result,
+             total_loss_I,
+             total_loss_S,
+             disc_I_loss,
+             disc_S_loss,
+             fake_I,
+             fake_S) = self.compute_losses(real_I, real_S, result, training=True)
 
-        self.gen_I_optimizer.minimize(loss=total_loss_I,
-                                      var_list=self.gen_IS.trainable_variables,
-                                      tape=tape)
-        self.gen_S_optimizer.minimize(loss=total_loss_S,
-                                      var_list=self.gen_SI.trainable_variables,
-                                      tape=tape)
+        # Helper function to replace NaNs in gradients with zeros
+        def sanitise_grads(grads):
+            return [
+                tf.where(tf.math.is_nan(g), tf.zeros_like(g), g) if g is not None else None
+                for g in grads
+            ]
 
-        self.disc_I_optimizer.minimize(loss=disc_I_loss,
-                                       var_list=self.disc_I.trainable_variables,
-                                       tape=tape)
-        self.disc_S_optimizer.minimize(loss=disc_S_loss,
-                                       var_list=self.disc_S.trainable_variables,
-                                       tape=tape)
+        # Compute gradients
+        gen_I_grads = sanitise_grads(tape.gradient(total_loss_I, self.gen_IS.trainable_variables))
+        gen_S_grads = sanitise_grads(tape.gradient(total_loss_S, self.gen_SI.trainable_variables))
+        disc_I_grads = sanitise_grads(tape.gradient(disc_I_loss, self.disc_I.trainable_variables))
+        disc_S_grads = sanitise_grads(tape.gradient(disc_S_loss, self.disc_S.trainable_variables))
 
+        # Apply gradients
+        self.gen_I_optimizer.apply_gradients(zip(gen_I_grads, self.gen_IS.trainable_variables))
+        self.gen_S_optimizer.apply_gradients(zip(gen_S_grads, self.gen_SI.trainable_variables))
+        self.disc_I_optimizer.apply_gradients(zip(disc_I_grads, self.disc_I.trainable_variables))
+        self.disc_S_optimizer.apply_gradients(zip(disc_S_grads, self.disc_S.trainable_variables))
+
+        del tape  # Free resources
         return result
 
     def test_step(self, real_I, real_S):

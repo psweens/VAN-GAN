@@ -5,9 +5,9 @@ import tensorflow as tf
 import skimage.io as sk
 from skimage import exposure
 from scipy import stats
-import tf_clahe
-import mclahe as mc
-import tensorflow_addons as tfa
+#import tf_clahe
+#import mclahe as mc
+#import tensorflow_addons as tfa
 
 def min_max_norm(data):
     """
@@ -26,7 +26,7 @@ def min_max_norm(data):
     return (data - dmin) / (dmax - dmin)
 #
 
-def min_max_norm_tf(arr, axis=None):
+def min_max_norm_tf(arr, axis=None, epsilon=1e-8):
     """
     Performs min-max normalisation on a given array using TensorFlow library.
 
@@ -47,7 +47,7 @@ def min_max_norm_tf(arr, axis=None):
         min_val = tf.reduce_min(arr, axis=axis, keepdims=True)
         max_val = tf.reduce_max(arr, axis=axis, keepdims=True)
 
-    return (arr - min_val) / (max_val - min_val)
+    return (arr - min_val) / (max_val - min_val + epsilon)
 
 
 def rescale_arr_tf(arr, alpha=-0.5, beta=0.5):
@@ -333,6 +333,58 @@ def hist_equalization(img):
     img_cdf, bin_centers = exposure.cumulative_distribution(img)
     return np.interp(img, bin_centers, img_cdf)
 
+''' https://github.com/volcanofly/tf_Sobel_edge_3D/blob/master/sobel_edge_3d.py '''
+def sobel_edge_3d(inputTensor):
+    """
+    Computes Sobel edge maps on 3D images.
+
+    Args:
+        inputTensor: A 5D TensorFlow tensor with shape [batch_size, W, H, D, 1],
+                     where W is width, H is height, D is depth, and the tensor
+                     represents a batch of 3D images with a single channel.
+
+    Returns:
+        A 5D TensorFlow tensor with shape [batch_size, W-2, H-2, D-2, 3], where
+        each of the last dimension's 3 channels represents the Sobel edge map
+        along one of the three dimensions (width, height, depth).
+    """
+    # Define the Sobel filter components for edge detection and smoothing
+    sobel1 = tf.constant([1, 0, -1], tf.float32)  # 1D Sobel filter for edge detection
+    sobel2 = tf.constant([1, 2, 1], tf.float32)   # 1D Sobel filter for smoothing (gaussian-like)
+
+    # Initialize lists to hold the filters for each dimension
+    sobel1xyz = [sobel1, sobel1, sobel1]
+    sobel2xyz = [sobel2, sobel2, sobel2]
+
+    # Reshape the filters for convolution in each of the three dimensions (x, y, z)
+    for xyz in range(3):
+        newShape = [1, 1, 1, 1, 1]
+        newShape[xyz] = 3  # Set the appropriate dimension to 3 for the Sobel filter
+        sobel1xyz[xyz] = tf.reshape(sobel1, newShape)  # Reshape for edge detection
+        sobel2xyz[xyz] = tf.reshape(sobel2, newShape)  # Reshape for smoothing
+
+    # Apply the Sobel filters in the x dimension
+    # First, apply the edge detection filter along the x-axis
+    outputTensor_x = tf.nn.conv3d(inputTensor, sobel1xyz[0], strides=[1, 1, 1, 1, 1], padding='VALID')
+    # Then, smooth along the y and z axes
+    outputTensor_x = tf.nn.conv3d(outputTensor_x, sobel2xyz[1], strides=[1, 1, 1, 1, 1], padding='VALID')
+    outputTensor_x = tf.nn.conv3d(outputTensor_x, sobel2xyz[2], strides=[1, 1, 1, 1, 1], padding='VALID')
+
+    # Apply the Sobel filters in the y dimension
+    # Edge detection along the y-axis, followed by smoothing along x and z axes
+    outputTensor_y = tf.nn.conv3d(inputTensor, sobel1xyz[1], strides=[1, 1, 1, 1, 1], padding='VALID')
+    outputTensor_y = tf.nn.conv3d(outputTensor_y, sobel2xyz[0], strides=[1, 1, 1, 1, 1], padding='VALID')
+    outputTensor_y = tf.nn.conv3d(outputTensor_y, sobel2xyz[2], strides=[1, 1, 1, 1, 1], padding='VALID')
+
+    # Apply the Sobel filters in the z dimension
+    # Edge detection along the z-axis, with smoothing along x and y axes
+    outputTensor_z = tf.nn.conv3d(inputTensor, sobel1xyz[2], strides=[1, 1, 1, 1, 1], padding='VALID')
+    outputTensor_z = tf.nn.conv3d(outputTensor_z, sobel2xyz[0], strides=[1, 1, 1, 1, 1], padding='VALID')
+    outputTensor_z = tf.nn.conv3d(outputTensor_z, sobel2xyz[1], strides=[1, 1, 1, 1, 1], padding='VALID')
+
+    # Concatenate the edge maps from all three dimensions
+    return tf.concat([outputTensor_x, outputTensor_y, outputTensor_z], 4)
+
 
 def save_dict(di_, filename_):
     """Saves a Python dictionary object to a file using the pickle module.
@@ -439,48 +491,48 @@ def get_shape(arr):
     return res  # return the shape list
 
 
-@tf.function
-def fast_clahe(img, gpu_optimized=True):
-    return tf_clahe.clahe(img, clip_limit=1.5, gpu_optimized=gpu_optimized)
+# @tf.function
+# def fast_clahe(img, gpu_optimized=True):
+#     return tf_clahe.clahe(img, clip_limit=1.5, gpu_optimized=gpu_optimized)
 
-@tf.function
-def clahe_3d(image):
-    """
-    Applies 3D Contrast Limited Adaptive Histogram Equalization (CLAHE) to a 3D image.
-
-    Args:
-        image (tf.Tensor): Input 3D image of shape (batch_size, width, length, depth, channels).
-        clip_limit (float): Clip limit for CLAHE.
-        grid_size (tuple): Size of the grid for histogram equalization (depth, width, length).
-        num_bins (int): Number of bins in the histogram.
-
-    Returns:
-        tf.Tensor: Processed 3D image.
-    """
-    # Extract dimensions
-    batch_size, width, length, depth, channels = image.shape
-
-    # Initialize a list to hold the processed slices
-    processed_slices = []
-
-    # Create a CLAHE op for each depth slice and append it to the list
-    for d in range(depth):
-        slice_image = image[:, :, :, d, :]
-
-        # Apply CLAHE to the slice using fast_clahe function
-        # clahe = tfa.image.median_filter2d(
-        #     fast_clahe(slice_image),
-        #     filter_shape=(2, 2)
-        # )
-        clahe = fast_clahe(slice_image)
-
-        # Append the processed slice to the list
-        processed_slices.append(clahe)
-
-    # Stack the processed slices to form the final 3D image
-    processed_image = tf.stack(processed_slices, axis=3)
-
-    return processed_image
+# @tf.function
+# def clahe_3d(image):
+#     """
+#     Applies 3D Contrast Limited Adaptive Histogram Equalization (CLAHE) to a 3D image.
+#
+#     Args:
+#         image (tf.Tensor): Input 3D image of shape (batch_size, width, length, depth, channels).
+#         clip_limit (float): Clip limit for CLAHE.
+#         grid_size (tuple): Size of the grid for histogram equalization (depth, width, length).
+#         num_bins (int): Number of bins in the histogram.
+#
+#     Returns:
+#         tf.Tensor: Processed 3D image.
+#     """
+#     # Extract dimensions
+#     batch_size, width, length, depth, channels = image.shape
+#
+#     # Initialize a list to hold the processed slices
+#     processed_slices = []
+#
+#     # Create a CLAHE op for each depth slice and append it to the list
+#     for d in range(depth):
+#         slice_image = image[:, :, :, d, :]
+#
+#         # Apply CLAHE to the slice using fast_clahe function
+#         # clahe = tfa.image.median_filter2d(
+#         #     fast_clahe(slice_image),
+#         #     filter_shape=(2, 2)
+#         # )
+#         clahe = fast_clahe(slice_image)
+#
+#         # Append the processed slice to the list
+#         processed_slices.append(clahe)
+#
+#     # Stack the processed slices to form the final 3D image
+#     processed_image = tf.stack(processed_slices, axis=3)
+#
+#     return processed_image
 
 
 def save_args(args, filename):

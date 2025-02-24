@@ -1,5 +1,5 @@
 import tensorflow_addons as tfa
-from tensorflow.keras.models import Model
+from tensorflow.keras import Model
 from tensorflow.keras.layers import (
     Activation,
     Add,
@@ -16,7 +16,8 @@ from tensorflow.keras.layers import (
     SpatialDropout2D,
     SpatialDropout3D,
     UpSampling2D,
-    UpSampling3D
+    UpSampling3D,
+    #GroupNormalization,
 )
 from building_blocks import ReflectionPadding3D, ReflectionPadding2D
 

@@ -6,8 +6,7 @@ from skimage import io
 # from joblib import Parallel, delayed
 from joblib import Parallel, delayed
 from tensorflow.keras import layers
-from utils import min_max_norm, fast_clahe
-from custom_learning_rate import polynomial_decay, cosine_decay, CyclicalCosineLR
+from utils import min_max_norm
 from scipy.ndimage import gaussian_filter
 
 
@@ -114,7 +113,7 @@ class GanMonitor:
             gauss_weight = np.squeeze(gauss_weight, axis=-1)  # Ensure gauss_weight is (height, width, channels)
         else:
             gauss_weight_shape = (
-            subvol_size[1], subvol_size[2], subvol_size[3] if subvol_size[3] != img.shape[2] else 1)
+                subvol_size[1], subvol_size[2], subvol_size[3] if subvol_size[3] != img.shape[2] else 1)
             gauss_weight = self.gaussian_weight(gauss_weight_shape, sigma=1)
 
         if self.dims == 3 and subvol_size[3] == img.shape[2]:  # No striding in the z-dimension for 3D case
@@ -159,6 +158,9 @@ class GanMonitor:
                     # Expand dimensions and predict
                     subvol = np.expand_dims(subvol, axis=0)
 
+                    if self.process_imaging_domain is not None:
+                        subvol = self.process_imaging_domain(subvol)
+
                     # Ensure `pred_subvol` is a NumPy array
                     pred_subvol = gen(subvol, training=False)[0].numpy()  # Convert TensorFlow tensor to NumPy
 
@@ -166,7 +168,7 @@ class GanMonitor:
                     if self.dims == 2:
                         # Explicitly reshape pred_subvol and gauss_weight to avoid broadcasting issues
                         pred_subvol = pred_subvol[:end_row - row_slice.start,
-                                               :end_col - col_slice.start, :]
+                                      :end_col - col_slice.start, :]
 
                         gauss_weight_reshaped = gauss_weight[:end_row - row_slice.start, :end_col - col_slice.start, :]
 
@@ -304,13 +306,12 @@ class GanMonitor:
                     dpi=300)
 
         plt.tight_layout()
-        plt.show(block=False)
+        #plt.show(block=False)
         plt.close()
 
         # Generate 3D predictions, stitch and save
-        # if epoch % self.period3D == 1 and outputFull and epoch > 160:
-        #     self.stitch_subvolumes(genX, storeSample.numpy(),
-        #                            self.imgSize, epoch=epoch, name=sampleName, process_img=process_img)
+        # if epoch % self.period3D == 1 and outputFull and epoch > 180:
+        #     self.stitch_subvolumes(genX, storeSample.numpy(), self.imgSize, epoch=epoch, name=sampleName)
 
     def set_learning_rate(self, model, epoch, args):
         """
@@ -377,7 +378,7 @@ class GanMonitor:
         for layer in model.layers:
             if isinstance(layer, tf.keras.layers.GaussianNoise):
                 layer.stddev = noise
-        print('Noise std: %0.5f' % noise)
+        print('%s Noise Std: %0.5f' % (model.discriminator_name, noise))
 
     def on_epoch_start(self, model, epoch, args, logs=None):
         """
@@ -456,10 +457,10 @@ class GanMonitor:
             if segmentation:
                 print('Segmenting %s ... (%i / %i)' % (filename, imgdir + 1, len(test_set)))
                 # Generate segmentations, stitch and save
-                self.stitch_subvolumes(model.gen_IS, img, sub_img_size, name=filetext + filename, output_path=filepath,
-                                       complete=True, stride=stride)
+                self.stitch_subvolumes(model.gen_IS, img, sub_img_size, name=filetext + filename,
+                                       complete=True, stride=stride, output_path=filepath)
             else:
                 print('Mapping %s ... (%i / %i)' % (filename, imgdir + 1, len(test_set)))
                 # Generate segmentations, stitch and save
-                self.stitch_subvolumes(model.gen_SI, img, sub_img_size, name=filetext + filename, output_path=filepath,
-                                       complete=True, process_img=True, stride=stride)
+                self.stitch_subvolumes(model.gen_SI, img, sub_img_size, name=filetext + filename,
+                                       complete=True, process_img=True, stride=stride, output_path=filepath)

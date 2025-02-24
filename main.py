@@ -7,7 +7,9 @@ import tensorflow as tf
 
 tf.keras.backend.clear_session()
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+#tf.debugging.set_log_device_placement(True)
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
 
 print('*** Setting up GPU ***')
@@ -29,6 +31,8 @@ from vangan import VanGan, train
 from custom_callback import GanMonitor
 from dataset import DatasetGen
 from preprocessing import DataPreprocessor
+from preprocess_modality import preprocess_rsom, preprocess_tplsm, preprocess_hrem, preprocess_lsm, \
+    preprocess_retinal_image
 from tb_callback import TB_Summary
 from utils import save_args
 from post_training import epoch_sweep
@@ -53,7 +57,7 @@ else:
     os.makedirs(monitorDir)
 
 summary = TB_Summary(tensorboardDir, len(physical_devices))  # Initialise TensorBoard summary helper
-
+print(physical_devices)
 ''' SET PARAMETERS '''
 print('*** Setting VANGAN parameters ***')
 args = argparse.ArgumentParser()
@@ -64,13 +68,13 @@ args.MIN_PIXEL_VALUE = -1.0
 args.MAX_PIXEL_VALUE = 0.8
 
 # Training parameters
-args.EPOCHS = 200
-args.BATCH_SIZE = 3
+args.EPOCHS = 250
+args.BATCH_SIZE = 1
 args.GLOBAL_BATCH_SIZE = args.N_DEVICES * args.BATCH_SIZE
-args.PREFETCH_SIZE = 4
+args.PREFETCH_SIZE = 1
 args.INITIAL_LR = 2e-4  # Learning rate
-args.INITIATE_LR_DECAY = 0.5 * args.EPOCHS  # Set start of learning rate decay to 0
-args.NO_NOISE = args.EPOCHS  # Set when discriminator noise decays to 0
+args.INITIATE_LR_DECAY = 200  #int(0.5 * args.EPOCHS)  # Set start of learning rate decay to 0
+args.NO_NOISE = 110  # int(1. * args.EPOCHS)  # Set when discriminator noise decays to 0
 
 # Image parameters
 args.SURFACE_ILLUMINATION = True
@@ -157,13 +161,34 @@ def preprocess_rsom_images(img, lower_thresh=0.05, upper_thresh=99.95):
 # Load dataset partitions
 imaging_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataA_partition.pkl')
 synth_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataB_partition.pkl')
+# imaging_data.load_partition('/mnt/sdb/VG_Retinal_Dataset/dataA_partition.pkl')
+# synth_data.load_partition('/mnt/sdb/VG_Retinal_Dataset/dataB_partition.pkl')
+
+''' ENSURE DATASET SIZES ARE DIVISIBLE BY NUMBER OF GPUS '''
+def adjust_dataset_partition(partition, n_devices):
+    """
+    Adjusts dataset partitions (train, val, test) so that their sizes are divisible by the number of GPUs.
+    Removes excess elements from the lists.
+    """
+    for key in ['training', 'validation', 'testing']:
+        if key in partition:
+            size = len(partition[key])
+            remainder = size % n_devices
+            if remainder != 0:
+                print(f"Adjusting {key} set from {size} to {size - remainder} to match {n_devices} GPUs.")
+                partition[key] = partition[key][:size - remainder]
+
+
+# Apply adjustment to training, validation, and testing sets
+adjust_dataset_partition(imaging_data.partition, args.N_DEVICES)
+adjust_dataset_partition(synth_data.partition, args.N_DEVICES)
 
 ''' GENERATE TENSORFLOW DATASETS '''
 print('*** Generating datasets for model ***')
 # Define function to preprocess imaging domain image on the fly (otf)
 # Min/max batch normalisation and rescaling to [-1,1] shown here
 @tf.function
-def process_imaging_otf(tensor, axis=(1, 2, 3, 4), keepdims=True):
+def process_imaging_otf(tensor, axis=None, keepdims=True):
 
     # Calculate the maximum and minimum values along the batch dimension
     max_vals = tf.reduce_max(tensor, axis=axis, keepdims=keepdims)
@@ -213,12 +238,16 @@ for epoch in range(args.EPOCHS):
     vangan_model.current_epoch.assign(epoch + 1)
     start = time()
 
-    # if (epoch + 1) <= 5:
-    #     vangan_model.identity_off.assign(0.)
+    # Set identity_off to False during the first 50 epochs, and True afterward
+    # if (epoch + 1) <= 50:
+    #     vangan_model.identity_off.assign(False)  # Assigning Boolean value
     # else:
-    #     vangan_model.identity_off.assign(1.)
-    if (epoch + 1) >= 100:#0.5 * args.EPOCHS:
-        vangan_model.shared_cycle.assign(1.)
+    #     vangan_model.identity_off.assign(True)  # Assigning Boolean value
+
+    # Set shared_cycle to True after epoch 100
+    if (epoch + 1) >= 100:
+        vangan_model.shared_cycle.assign(True)  # Assigning Boolean value
+
     plotter.on_epoch_start(vangan_model, epoch, args)
 
     'Training GAN for fixed no. of steps'

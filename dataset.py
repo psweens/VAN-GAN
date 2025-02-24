@@ -5,7 +5,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
-from utils import get_vacuum, fast_clahe, clahe_3d, min_max_norm_tf, sobel_edge_3d
+from utils import get_vacuum, min_max_norm_tf, sobel_edge_3d
 
 
 class DatasetGen:
@@ -62,57 +62,68 @@ class DatasetGen:
         ''' Create datasets '''
         with self.strategy.scope():
 
-            ''' Create imaging train dataset '''
-            self.imaging_train_dataset = tf.data.Dataset.from_generator(lambda: self.imaging_datagen('training'),
-                                                                        output_types=tf.float32,
-                                                                        output_shapes=self.imaging_output_shapes)
+            # Create imaging datasets as before, but without applying otf_imaging mapping.
+            self.imaging_train_dataset = tf.data.Dataset.from_generator(
+                lambda: self.imaging_datagen('training'),
+                output_types=tf.float32,
+                output_shapes=self.imaging_output_shapes
+            )
             self.imaging_train_dataset = self.imaging_train_dataset.repeat()
             self.imaging_train_dataset = self.imaging_train_dataset.with_options(options)
-            self.imaging_train_dataset = self.imaging_train_dataset.map(self.process_imaging_domain,
-                                                                        num_parallel_calls=tf.data.AUTOTUNE)
-            self.imaging_train_dataset = self.imaging_train_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
-            if self.otf_imaging is not None:
-                self.imaging_train_dataset = self.imaging_train_dataset.map(self.otf_imaging,
-                                                                            num_parallel_calls=tf.data.AUTOTUNE)
+            self.imaging_train_dataset = self.imaging_train_dataset.map(
+                self.process_imaging_domain, num_parallel_calls=tf.data.AUTOTUNE)
 
-            ''' Create imaging validation dataset '''
-            self.imaging_val_dataset = tf.data.Dataset.from_generator(lambda: self.imaging_datagen('validation'),
-                                                                      output_types=tf.float32,
-                                                                      output_shapes=self.imaging_output_shapes)
+            self.imaging_val_dataset = tf.data.Dataset.from_generator(
+                lambda: self.imaging_datagen('validation'),
+                output_types=tf.float32,
+                output_shapes=self.imaging_output_shapes
+            )
             self.imaging_val_dataset = self.imaging_val_dataset.repeat()
             self.imaging_val_dataset = self.imaging_val_dataset.with_options(options)
-            self.imaging_val_dataset = self.imaging_val_dataset.map(self.process_imaging_domain,
-                                                                    num_parallel_calls=tf.data.AUTOTUNE)
-            self.imaging_val_dataset = self.imaging_val_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
-            if self.otf_imaging is not None:
-                self.imaging_val_dataset = self.imaging_val_dataset.map(self.otf_imaging,
-                                                                        num_parallel_calls=tf.data.AUTOTUNE)
+            self.imaging_val_dataset = self.imaging_val_dataset.map(
+                self.process_imaging_domain, num_parallel_calls=tf.data.AUTOTUNE)
 
-            ''' Create segmentation train dataset '''
+            # Similarly, segmentation datasets remain unchanged.
             self.segmentation_train_dataset = tf.data.Dataset.from_generator(
                 lambda: self.segmentation_datagen('training'),
                 output_types=tf.float32,
                 output_shapes=self.segmentation_output_shapes)
-            self.segmentation_train_dataset = self.segmentation_train_dataset.map(self.process_seg_domain,
-                                                                                  num_parallel_calls=tf.data.AUTOTUNE)
-            # self.segmentation_train_dataset = self.segmentation_train_dataset.map(self.return_black,
-            #                                                                    num_parallel_calls=tf.data.AUTOTUNE)
+            self.segmentation_train_dataset = self.segmentation_train_dataset.map(
+                self.process_seg_domain_method2, num_parallel_calls=tf.data.AUTOTUNE)
             self.segmentation_train_dataset = self.segmentation_train_dataset.repeat()
             self.segmentation_train_dataset = self.segmentation_train_dataset.with_options(options)
-            self.segmentation_train_dataset = self.segmentation_train_dataset.batch(self.GLOBAL_BATCH_SIZE,
-                                                                                    drop_remainder=True)
 
-            ''' Create segmentation validation dataset '''
             self.segmentation_val_dataset = tf.data.Dataset.from_generator(
                 lambda: self.segmentation_datagen('validation'),
                 output_types=tf.float32,
                 output_shapes=self.segmentation_output_shapes)
-            self.segmentation_val_dataset = self.segmentation_val_dataset.map(map_func=self.process_seg_domain,
-                                                                              num_parallel_calls=tf.data.AUTOTUNE)
+            self.segmentation_val_dataset = self.segmentation_val_dataset.map(
+                self.process_seg_domain_method2, num_parallel_calls=tf.data.AUTOTUNE)
             self.segmentation_val_dataset = self.segmentation_val_dataset.repeat()
             self.segmentation_val_dataset = self.segmentation_val_dataset.with_options(options)
-            self.segmentation_val_dataset = self.segmentation_val_dataset.batch(self.GLOBAL_BATCH_SIZE,
-                                                                                drop_remainder=True)
+
+            # Create a global dataset (using the full GLOBAL_BATCH_SIZE) for training.
+            global_train_dataset = tf.data.Dataset.zip((self.imaging_train_dataset, self.segmentation_train_dataset))
+            global_train_dataset = global_train_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
+            if self.otf_imaging is not None:
+                # Apply otf_imaging on the entire global batch.
+                global_train_dataset = global_train_dataset.map(
+                    lambda imaging, seg: (self.otf_imaging(imaging), seg),
+                    num_parallel_calls=tf.data.AUTOTUNE)
+            global_train_dataset = global_train_dataset.prefetch(tf.data.AUTOTUNE)
+
+            # Similarly, for the validation dataset.
+            global_val_dataset = tf.data.Dataset.zip((self.imaging_val_dataset, self.segmentation_val_dataset))
+            global_val_dataset = global_val_dataset.batch(self.GLOBAL_BATCH_SIZE, drop_remainder=True)
+            if self.otf_imaging is not None:
+                global_val_dataset = global_val_dataset.map(
+                    lambda imaging, seg: (self.otf_imaging(imaging), seg),
+                    num_parallel_calls=tf.data.AUTOTUNE)
+            global_val_dataset = global_val_dataset.prefetch(tf.data.AUTOTUNE)
+
+            # Now distribute the global datasets across replicas.
+            self.train_dataset = self.strategy.experimental_distribute_dataset(global_train_dataset)
+            self.val_dataset = self.strategy.experimental_distribute_dataset(global_val_dataset)
 
             ''' Create validation dataset for full images (no sample cropping) '''
             self.imaging_val_full_vol_data = tf.data.Dataset.from_generator(self.imaging_val_datagen,
@@ -123,16 +134,6 @@ class DatasetGen:
             ''' Plot samples from training dataset '''
             self.plot_sample_dataset()
 
-            ''' Zip training and validation datasets & setup to distribute across GPUs '''
-            self.train_dataset = tf.data.Dataset.zip(
-                (self.imaging_train_dataset,
-                 self.segmentation_train_dataset)).prefetch(tf.data.AUTOTUNE)
-            self.val_dataset = tf.data.Dataset.zip(
-                (self.imaging_val_dataset,
-                 self.segmentation_val_dataset)).prefetch(tf.data.AUTOTUNE)
-
-            self.train_dataset = self.strategy.experimental_distribute_dataset(self.train_dataset)
-            self.val_dataset = self.strategy.experimental_distribute_dataset(self.val_dataset)
 
     ''' Functions to gather imaging subvolumes '''
 
@@ -238,151 +239,166 @@ class DatasetGen:
 
     @tf.function
     def random_rotate_3d(self, image, preserve_z_axis):
+        """
+        Randomly rotates a 3D image tensor.
 
-        # Randomly decide whether to perform augmentation
-        if not tf.random.uniform(()) > 0.5:
-            return image
+        Args:
+            image: A 4D tensor with shape (x, y, z, channels).
+            preserve_z_axis: A boolean (or scalar boolean tensor) indicating whether to restrict
+                             rotation to the z-axis only.
 
-        if preserve_z_axis:
-            # Rotate only around the z-axis
-            num_rotations = tf.random.uniform((), minval=0, maxval=4, dtype=tf.int32)
-            image = tf.transpose(image, perm=[2, 1, 0, 3])  # (z, y, x, c)
-            image = tf.image.rot90(image, k=num_rotations)
-            image = tf.transpose(image, perm=[2, 1, 0, 3])  # Back to (x, y, z, c)
-        else:
-            # Randomly select a rotation axis: 0 for x, 1 for y, 2 for z
-            rotation_axis = tf.random.uniform((), minval=0, maxval=3, dtype=tf.int32)
-            num_rotations = tf.random.uniform((), minval=1, maxval=4, dtype=tf.int32)
+        Returns:
+            The (possibly) rotated image tensor.
+        """
+        # Ensure preserve_z_axis is a tensor boolean.
+        preserve_z_axis = tf.convert_to_tensor(preserve_z_axis, dtype=tf.bool)
+        # Decide whether to perform rotation (a boolean tensor).
+        do_rotate = tf.greater(tf.random.uniform(()), 0.5)
 
-            if rotation_axis == 0:
-                # Rotate around x-axis
-                image = tf.transpose(image, perm=[0, 2, 1, 3])  # (x, z, y, c)
-                image = tf.image.rot90(image, k=num_rotations)
-                image = tf.transpose(image, perm=[0, 2, 1, 3])  # Back to (x, y, z, c)
-            elif rotation_axis == 1:
-                # Rotate around y-axis
-                image = tf.transpose(image, perm=[1, 2, 0, 3])  # (y, z, x, c)
-                image = tf.image.rot90(image, k=num_rotations)
-                image = tf.transpose(image, perm=[2, 0, 1, 3])  # Back to (x, y, z, c)
-            elif rotation_axis == 2:
-                # Rotate around z-axis
-                image = tf.transpose(image, perm=[2, 1, 0, 3])  # (z, y, x, c)
-                image = tf.image.rot90(image, k=num_rotations)
-                image = tf.transpose(image, perm=[2, 1, 0, 3])  # Back to (x, y, z, c)
+        def rotate_fn():
+            # Define a branch that rotates only around the z-axis.
+            def rotate_z():
+                num_rotations = tf.random.uniform((), minval=0, maxval=4, dtype=tf.int32)
+                # Transpose so that the z-dimension becomes the first dimension.
+                rotated = tf.transpose(image, perm=[2, 1, 0, 3])  # (z, y, x, c)
+                rotated = tf.image.rot90(rotated, k=num_rotations)
+                # Transpose back to original order.
+                rotated = tf.transpose(rotated, perm=[2, 1, 0, 3])  # (x, y, z, c)
+                return rotated
 
-        return image
+            # Define a branch that rotates about a randomly chosen axis.
+            def rotate_random_axis():
+                rotation_axis = tf.random.uniform((), minval=0, maxval=3, dtype=tf.int32)
+                num_rotations = tf.random.uniform((), minval=1, maxval=4, dtype=tf.int32)
 
-    # def process_imaging_domain(self, image):
-    #     """ Standardizes image data and creates subvolumes """
-    #     arr = tf.image.random_crop(image, size=self.imaging_patch_shape)
-    #     # return self.random_rotate_3d(arr)
-    #     return self.random_rotate(arr, preserve_z_axis=self.surface_illumination)
+                def rotate_x():
+                    rotated = tf.transpose(image, perm=[0, 2, 1, 3])  # (x, z, y, c)
+                    rotated = tf.image.rot90(rotated, k=num_rotations)
+                    rotated = tf.transpose(rotated, perm=[0, 2, 1, 3])  # back to (x, y, z, c)
+                    return rotated
 
-    @tf.function
+                def rotate_y():
+                    rotated = tf.transpose(image, perm=[1, 2, 0, 3])  # (y, z, x, c)
+                    rotated = tf.image.rot90(rotated, k=num_rotations)
+                    rotated = tf.transpose(rotated, perm=[2, 0, 1, 3])  # back to (x, y, z, c)
+                    return rotated
+
+                def rotate_z_case():
+                    rotated = tf.transpose(image, perm=[2, 1, 0, 3])  # (z, y, x, c)
+                    rotated = tf.image.rot90(rotated, k=num_rotations)
+                    rotated = tf.transpose(rotated, perm=[2, 1, 0, 3])  # back to (x, y, z, c)
+                    return rotated
+
+                # Use a list of branch functions instead of a dict.
+                branch_fns = [rotate_x, rotate_y, rotate_z_case]
+                return tf.switch_case(branch_index=rotation_axis, branch_fns=branch_fns)
+
+            # Choose which rotation branch to run based on preserve_z_axis.
+            return tf.cond(tf.convert_to_tensor(preserve_z_axis), rotate_z, rotate_random_axis)
+
+        # Use tf.cond to either rotate or simply return the image (wrapped with tf.identity).
+        rotated_image = tf.cond(tf.convert_to_tensor(do_rotate), rotate_fn, lambda: tf.identity(image))
+        return rotated_image
+
+
     def process_imaging_domain(self, image):
-
-        # Set the cropping size dynamically based on whether the image is 2D or 3D
-        if self.DIMENSIONS == 2:  # 2D image (batch, X, Y, C)
-            crop_shape = self.imaging_patch_shape[:3]  # Ignore Z dimension for 2D
-        else:  # 3D image (batch, X, Y, Z, C)
-            crop_shape = self.imaging_patch_shape
-
-        # Initialize a loop counter
-        i = tf.constant(0)
-
-        # Define the maximum number of iterations
-        max_iterations = tf.constant(20)
-
-        # Initialize arr with a random crop
-        arr = tf.image.random_crop(image, size=crop_shape)
-
-        # Define the condition for the while loop
-        def condition(i, arr):
-            return tf.math.logical_and(i < max_iterations, tf.math.reduce_mean(arr) < -0.8)
-
-        # Define the body of the while loop
-        def body(i, _):
-            # Generate a new random crop from the original image
-            new_arr = tf.image.random_crop(image, size=crop_shape)
-            return i + 1, new_arr
-
-        # Run the loop
-        _, arr = tf.while_loop(condition, body, [i, arr])
-
-        # If it's a 3D image, apply 3D-specific operations
-        if self.DIMENSIONS == 3:  # 3D image (batch, X, Y, Z, C)
-            arr = self.random_rotate(arr, preserve_z_axis=self.surface_illumination)
-
-        # If it's a 2D image, skip the 3D-specific operation
+        """ Standardizes image data and creates subvolumes """
+        arr = tf.image.random_crop(image, size=self.imaging_patch_shape)
+        # return self.random_rotate_3d(arr)
         return self.random_rotate(arr, preserve_z_axis=self.surface_illumination)
+
+    # @tf.function
+    # def process_imaging_domain(self, image):
+    #
+    #     # Set the cropping size dynamically based on whether the image is 2D or 3D
+    #     if self.DIMENSIONS == 2:  # 2D image (batch, X, Y, C)
+    #         crop_shape = self.imaging_patch_shape[:3]  # Ignore Z dimension for 2D
+    #     else:  # 3D image (batch, X, Y, Z, C)
+    #         crop_shape = self.imaging_patch_shape
+    #
+    #     # Initialize a loop counter
+    #     i = tf.constant(0)
+    #
+    #     # Define the maximum number of iterations
+    #     max_iterations = tf.constant(10)
+    #
+    #     # Initialize arr with a random crop
+    #     arr = tf.image.random_crop(image, size=crop_shape)
+    #
+    #     # Define the condition for the while loop
+    #     def condition(i, arr):
+    #         return tf.math.logical_and(i < max_iterations, tf.math.reduce_mean(arr) < -0.8)
+    #
+    #     # Define the body of the while loop
+    #     def body(i, _):
+    #         # Generate a new random crop from the original image
+    #         new_arr = tf.image.random_crop(image, size=crop_shape)
+    #         return i + 1, new_arr
+    #
+    #     # Run the loop
+    #     _, arr = tf.while_loop(condition, body, [i, arr])
+    #
+    #     # If it's a 3D image, apply 3D-specific operations
+    #     if self.DIMENSIONS == 3:  # 3D image (batch, X, Y, Z, C)
+    #         arr = self.random_rotate(arr, preserve_z_axis=self.surface_illumination)
+    #
+    #     # If it's a 2D image, skip the 3D-specific operation
+    #     return self.random_rotate(arr, preserve_z_axis=self.surface_illumination)
 
     @tf.function
     def process_seg_domain(self, image):
         """
         Process segmentation domain for both 2D and 3D images.
+        Uses tf.cond to decide what to do if no positive (nonzero) values are found.
 
         Args:
-        - image: Input image tensor.
-        - dim: Dimensionality of the input image (2 for 2D, 3 for 3D).
+          image: Input image tensor.
 
         Returns:
-        - Cropped image tensor.
+          A cropped (and rotated) segmentation patch.
         """
-
-        # Find the coordinates of non-zero elements in the binary mask
         positive_coords = tf.where(image > 0.)
 
-        if tf.size(positive_coords) == 0:
-            # If no non-zero elements, handle accordingly (e.g., return original image)
+        def no_positive():
+            # If there are no nonzero elements, simply return the original image.
             return image
 
-        # Randomly shuffle the non-zero coordinates and select one
-        random_index = tf.random.shuffle(positive_coords)
-        random_coord = tf.cast(random_index[0], tf.int32)
+        def has_positive():
+            # Shuffle and pick a random coordinate among the positives.
+            random_index = tf.random.shuffle(positive_coords)
+            random_coord = tf.cast(random_index[0], tf.int32)
+            crop_size = tf.cast(self.segmentation_patch_shape, tf.int32)
 
-        # Calculate the cropping size based on self.segmentation_patch_shape
-        crop_size = tf.cast(self.segmentation_patch_shape, tf.int32)
+            if self.DIMENSIONS == 3:
+                width_max = tf.cast(tf.shape(image)[0] - crop_size[0], tf.int32)
+                length_max = tf.cast(tf.shape(image)[1] - crop_size[1], tf.int32)
+                depth_max = tf.cast(tf.shape(image)[2] - crop_size[2], tf.int32)
 
-        if self.DIMENSIONS == 3:
-            # For 3D images
+                width_start = tf.minimum(tf.maximum(0, random_coord[0] - crop_size[0] // 2), width_max)
+                length_start = tf.minimum(tf.maximum(0, random_coord[1] - crop_size[1] // 2), length_max)
+                depth_start = tf.minimum(tf.maximum(0, random_coord[2] - crop_size[2] // 2), depth_max)
 
-            # Calculate valid crop boundaries to prevent overlap with outer dimensions
-            width_max = tf.cast(tf.shape(image)[0] - crop_size[0], tf.int32)
-            length_max = tf.cast(tf.shape(image)[1] - crop_size[1], tf.int32)
-            depth_max = tf.cast(tf.shape(image)[2] - crop_size[2], tf.int32)
+                width_end = width_start + crop_size[0]
+                length_end = length_start + crop_size[1]
+                depth_end = depth_start + crop_size[2]
 
-            # Ensure random_coord is within valid bounds
-            width_start = tf.minimum(tf.maximum(0, random_coord[0] - crop_size[0] // 2), width_max)
-            length_start = tf.minimum(tf.maximum(0, random_coord[1] - crop_size[1] // 2), length_max)
-            depth_start = tf.minimum(tf.maximum(0, random_coord[2] - crop_size[2] // 2), depth_max)
+                cropped = image[width_start:width_end, length_start:length_end, depth_start:depth_end, :]
+            else:
+                width_max = tf.cast(tf.shape(image)[0] - crop_size[0], tf.int32)
+                length_max = tf.cast(tf.shape(image)[1] - crop_size[1], tf.int32)
 
-            # Calculate crop boundaries based on start positions
-            width_end = width_start + crop_size[0]
-            length_end = length_start + crop_size[1]
-            depth_end = depth_start + crop_size[2]
+                width_start = tf.minimum(tf.maximum(0, random_coord[0] - crop_size[0] // 2), width_max)
+                length_start = tf.minimum(tf.maximum(0, random_coord[1] - crop_size[1] // 2), length_max)
 
-            # Perform cropping
-            arr = image[width_start:width_end, length_start:length_end, depth_start:depth_end, :]
-        else:
-            # For 2D images
+                width_end = width_start + crop_size[0]
+                length_end = length_start + crop_size[1]
 
-            # Calculate valid crop boundaries to prevent overlap with outer dimensions
-            width_max = tf.cast(tf.shape(image)[0] - crop_size[0], tf.int32)
-            length_max = tf.cast(tf.shape(image)[1] - crop_size[1], tf.int32)
+                cropped = image[width_start:width_end, length_start:length_end, :]
 
-            # Ensure random_coord is within valid bounds
-            width_start = tf.minimum(tf.maximum(0, random_coord[0] - crop_size[0] // 2), width_max)
-            length_start = tf.minimum(tf.maximum(0, random_coord[1] - crop_size[1] // 2), length_max)
+            return self.random_rotate(cropped)
 
-            # Calculate crop boundaries based on start positions
-            width_end = width_start + crop_size[0]
-            length_end = length_start + crop_size[1]
-
-            # Perform cropping
-            arr = image[width_start:width_end, length_start:length_end, :]
-
-        # Apply spatial augmentation if needed (e.g., self.random_rotate_3d for 3D or 2D equivalent)
-        return self.random_rotate(arr)
+        # Use tf.cond to choose the appropriate branch based on the size of positive_coords.
+        return tf.cond(tf.equal(tf.size(positive_coords), 0), no_positive, has_positive)
 
     @tf.function
     def process_seg_domain_method2(self, image):
@@ -434,8 +450,8 @@ class DatasetGen:
         fig.subplots_adjust(hspace=0.5)
         for i, samples in enumerate(zip(self.imaging_train_dataset.take(1), self.segmentation_train_dataset.take(1))):
 
-            dI = samples[0][0].numpy()
-            dS = samples[1][0].numpy()
+            dI = self.otf_imaging(samples[0]).numpy()
+            dS = samples[1].numpy()
             if self.semi_supervised:
                 dIS = dS[:, :, self.segmentation_patch_shape[2]:, ]
                 dS = dS[:, :, :self.segmentation_patch_shape[2], ]
@@ -478,6 +494,7 @@ class DatasetGen:
                 axs[0, 2].set_title('Paired Imaging Dataset (XY)')
             axs[nfig, 0].set_ylabel('Voxel Frequency')
             plt.show(block=False)
+            plt.savefig('./GANMonitor/XY_Dataset_Sample')
             plt.close()
 
             if self.args.DIMENSIONS == 3:
@@ -502,4 +519,5 @@ class DatasetGen:
             if self.semi_supervised:
                 axs[0, 2].set_title('Paired Dataset (YZ)')
             plt.show(block=False)
+            plt.savefig('./GANMonitor/YZ_Dataset_Sample')
             plt.close()

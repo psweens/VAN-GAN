@@ -179,13 +179,13 @@ class DataPreprocessor:
                 stack[stack < 0.] = 0.0
                 stack[stack > 255.] = 255
 
-        stack = min_max_norm(stack)
         if self.partition_id == 'B':
+            stack = min_max_norm(stack)
             mode, _ = stats.mode(stack, axis=None)
             if mode == 1:
                 stack -= 1.
                 stack = abs(stack)
-        stack = (stack - 0.5) / 0.5
+            stack = (stack - 0.5) / 0.5
 
         if self.partition_id == 'B':
             stack[stack < 0.] = -1.0
@@ -202,7 +202,7 @@ class DataPreprocessor:
                     if self.DIMENSIONS == 2:
                         sk.imsave(arr_out, (stack * 127.5 + 127.5).astype('uint8'), bigtiff=False, check_contrast=False)
                     else:
-                        sk.imsave(arr_out, (np.transpose(stack, (2, 0, 1)) * 127.5 + 127.5).astype('uint8'),
+                        sk.imsave(arr_out, (np.transpose(stack, (2, 0, 1)) * 127.5 + 127.5).astype('float32'),
                                   bigtiff=False, check_contrast=False)
 
             if self.partition_id == 'B':

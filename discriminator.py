@@ -1,7 +1,6 @@
 import tensorflow_addons as tfa
 from tensorflow import keras
-from tensorflow.keras import layers
-from tensorflow.keras.models import Model
+from tensorflow.keras import layers, Model
 from building_blocks import downsample, ReflectionPadding2D, ReflectionPadding3D
 from tensorflow.keras.layers import (
     Activation,
@@ -19,7 +18,8 @@ from tensorflow.keras.layers import (
     SpatialDropout2D,
     SpatialDropout3D,
     UpSampling2D,
-    UpSampling3D
+    UpSampling3D,
+    #GroupNormalization
 )
 
 
@@ -68,7 +68,6 @@ class ConvolutionalDiscriminator(Model):
     def build_model(self):
 
         img_input = Input(shape=self.input_img_size,
-                          batch_size=self.batch_size,
                           name=self.discriminator_name + "_img_input" if self.name else None)
 
         x = self.ReflectionPadding()(img_input)
@@ -87,7 +86,7 @@ class ConvolutionalDiscriminator(Model):
 
         for i in range(self.num_downsampling):
             filters_multiplier = 2 ** (i + 1)
-            strides = 4 if i < 2 else 1
+            strides = 2 if i < 2 else 1
             padding = 'same' if i >= 2 else 'valid'
 
             x = downsample(
@@ -169,7 +168,7 @@ class ConvolutionalDiscriminator(Model):
             x = GaussianNoise(noise_std)(x)
 
         # if use_spec_norm:
-        #     x = tfa.layers.SpectralNormalization(layers.Conv3D(
+        #     x = tfa.layers.layers.SpectralNormalization(layers.Conv3D(
         #         filters,
         #         kernel_size,
         #         strides=strides,
@@ -184,7 +183,7 @@ class ConvolutionalDiscriminator(Model):
                       kernel_initializer=self.kernel_initializer,
                       padding=padding,
                       use_bias=use_bias)(x)
-        # x = layers.GroupNormalization(groups=1, axis=-1, gamma_initializer=gamma_initializer)(x)
+        # x = layers.#GroupNormalization(groups=1, axis=-1, gamma_initializer=gamma_initializer)(x)
         x = tfa.layers.InstanceNormalization()(x)
 
         if activation:
