@@ -5,7 +5,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
-from utils import get_vacuum, fast_clahe, clahe_3d
+from utils import get_vacuum
 
 
 class DatasetGen:
@@ -224,7 +224,6 @@ class DatasetGen:
         # if self.otf_imaging is not None:
         #     subvol = self.otf_imaging(subvol)
         arr = tf.image.random_crop(image, size=self.imaging_patch_shape)
-        # arr = clahe_3d(arr)
         return self.random_spatial_augmentation(arr, preserve_depth_orientation=True)
 
     @tf.function

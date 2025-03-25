@@ -5,14 +5,6 @@ import argparse
 import numpy as np
 import scipy.stats as sp
 import tensorflow as tf
-from time import time
-from vangan import VanGan, train
-from custom_callback import GanMonitor
-from dataset import DatasetGen
-from preprocessing import DataPreprocessor
-from tb_callback import TB_Summary
-from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm
-from post_training import epoch_sweep
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
@@ -39,7 +31,7 @@ from custom_callback import GanMonitor
 from dataset import DatasetGen
 from preprocessing import DataPreprocessor
 from tb_callback import TB_Summary
-from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm, threshold_outliers, save_args, min_max_norm, clahe_3d
+from utils import min_max_norm_tf, rescale_arr_tf, z_score_norm, threshold_outliers, save_args, min_max_norm
 from post_training import epoch_sweep
 from scipy.ndimage import median_filter
 

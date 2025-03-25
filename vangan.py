@@ -333,7 +333,7 @@ class VanGan:
 
         # Total generator loss
         total_loss_I = gen_IS_loss + cycle_loss_I + seg_loss  # + id_SI_loss
-        total_loss_S = gen_SI_loss + cycle_loss_S + reconstruction_loss_I  # + id_IS_loss
+        total_loss_S = gen_SI_loss + cycle_loss_S + reconstruction_loss  # + id_IS_loss
 
         result.update({
             'total_IS_loss': total_loss_I,
@@ -345,7 +345,7 @@ class VanGan:
             'cycle_gen_SIS_loss': cycle_loss_I,
             'cycle_gen_ISI_loss': cycle_loss_S,
             'seg_loss': seg_loss,
-            'reconstruction_loss_I': reconstruction_loss_I,
+            'reconstruction_loss_I': reconstruction_loss,
             # 'identity_IS': id_IS_loss,
             # 'identity_SI': id_SI_loss
         })

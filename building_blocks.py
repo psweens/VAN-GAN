@@ -137,6 +137,7 @@ def downsample(
         use_spec_norm=False,
         padding_size=(1, 1, 1),
         use_layer_noise=False,
+        dropout_rate=0.2,
         noise_std=0.1
 ):
     """
@@ -191,7 +192,7 @@ def downsample(
     if activation:
         x = activation(x)
         if use_dropout:
-            x = layers.SpatialDropout3D(0.2)(x)
+            x = layers.SpatialDropout3D(dropout_rate)(x)
     return x
 
 

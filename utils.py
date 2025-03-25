@@ -5,8 +5,6 @@ import tensorflow as tf
 import skimage.io as sk
 from skimage import exposure
 from scipy import stats
-import tf_clahe
-import mclahe as mc
 import tensorflow_addons as tfa
 
 def min_max_norm(data):
@@ -393,50 +391,6 @@ def get_shape(arr):
         res.append(len(arr))  # add the length of arr to the shape list
         arr = arr[0]  # set arr to the first element of arr
     return res  # return the shape list
-
-
-@tf.function
-def fast_clahe(img, gpu_optimized=True):
-    return tf_clahe.clahe(img, clip_limit=1.5, gpu_optimized=gpu_optimized)
-
-@tf.function
-def clahe_3d(image):
-    """
-    Applies 3D Contrast Limited Adaptive Histogram Equalization (CLAHE) to a 3D image.
-
-    Args:
-        image (tf.Tensor): Input 3D image of shape (batch_size, width, length, depth, channels).
-        clip_limit (float): Clip limit for CLAHE.
-        grid_size (tuple): Size of the grid for histogram equalization (depth, width, length).
-        num_bins (int): Number of bins in the histogram.
-
-    Returns:
-        tf.Tensor: Processed 3D image.
-    """
-    # Extract dimensions
-    batch_size, width, length, depth, channels = image.shape
-
-    # Initialize a list to hold the processed slices
-    processed_slices = []
-
-    # Create a CLAHE op for each depth slice and append it to the list
-    for d in range(depth):
-        slice_image = image[:, :, :, d, :]
-
-        # Apply CLAHE to the slice using fast_clahe function
-        # clahe = tfa.image.median_filter2d(
-        #     fast_clahe(slice_image),
-        #     filter_shape=(2, 2)
-        # )
-        clahe = fast_clahe(slice_image)
-
-        # Append the processed slice to the list
-        processed_slices.append(clahe)
-
-    # Stack the processed slices to form the final 3D image
-    processed_image = tf.stack(processed_slices, axis=3)
-
-    return processed_image
 
 
 def save_args(args, filename):
