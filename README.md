@@ -1,70 +1,103 @@
-# VAN-GAN: An Unsupervised Deep Learning Tool for Vascular Network Segmentation
+# 🧠 VAN-GAN: Unsupervised Vascular Network Segmentation from 3D Images
 
-***VAN-GAN offers an accessible and efficient solution for the segmentation of vascular networks from 3D images without the need for human-annotated labels.***
+**VAN-GAN** provides an accessible and efficient deep learning framework for the **segmentation of vascular networks in 3D images — without requiring annotated ground truth labels**.
 
-## Introduction
+---
 
-Recent advancements in imaging hardware have opened up new possibilities for visualising 3D vascular networks with exceptional resolution. However, the task of segmenting microvascular networks from these 3D image volumes and interpreting their physiological and pathological significance remains a time-consuming and error-prone process. Deep learning holds great potential in addressing this challenge, but existing supervised frameworks rely on labor-intensive human-annotated ground truth labels. To overcome these limitations, we introduce ***Vessel Segmentation Generative Adversarial Network (VAN-GAN)***, an unsupervised image-to-image translation deep learning model.
+## 🌱 Introduction
 
-![alt text](VANGAN_Overview.jpg)
-*(A) The training and application process of VAN-GAN utilises two unpaired datasets (real PAI volumes, x and synthetic blood vessels, y) to train the segmentor, G, for real-world use. (B) VAN-GAN adapts the cycleGAN model and learns mappings between imaging (x) and segmentation (y) domains (G:x->y, F:y->x) using additional reconstruction and topological cycle-consistency constraints.*
+As 3D biomedical imaging improves in resolution and accessibility, segmenting vascular networks remains a major bottleneck due to manual annotation requirements. VAN-GAN addresses this using a **fully unsupervised deep learning approach** based on image-to-image translation.
 
-## Methodology
+It adapts and extends the CycleGAN framework to translate between real photoacoustic images and synthetic vessel labels using domain-consistent constraints and 3D residual networks.
 
-VAN-GAN is a Python package that employs image-to-image translation techniques to segment 3D biomedical image volumes of vascular networks. Our framework builds upon the principles of CycleGAN with several extensions tailored for vascular network segmentation:
+![VAN-GAN Overview](VANGAN_Overview.jpg)
 
-* **3D Extension**: We extend the design to support 3D image volume generation using 3D convolutions, enabling accurate segmentation of vascular structures in three dimensions.
-* **Deep Residual U-Net Architecture**: We leverage a deep residual U-Net architecture for generators, providing a powerful tool for capturing fine details and improving segmentation performance.
-* **Training Stability and Regularisation**: We introduce random Gaussian noise to discriminator inputs and convolution layers to enhance training stability and regularisation, leading to more robust and reliable segmentation results.
-* **Modified Objective Loss Function**: The loss function is enhanced to include the following components:
-  * **Structure Similarity Reconstruction Loss**: This loss fosters similarity between real and cycled biomedical image volumes, aiding in preserving essential features during image-to-image translation. 
-  * **Spatial and Topological Constraint**: A constraint inspired by spatial and topological considerations is introduced to align real and cycled segmentation labels, further refining the segmentation accuracy. 
-  * **Exclusion of Identity Loss**: The identity loss component is excluded from the objective, streamlining the segmentation process and avoiding unnecessary complexities. 
-* **Synthetic 3D Images**: VAN-GAN leverages synthetic blood vessel networks closely resembling real-life anatomy during training, effectively removing the reliance on manual labelling.
+---
 
-![alt text](Generator_Architecture.jpg)
-*(A) The VAN-GAN model trains a 3D deep residual U-Net architecture to segment 3D images of real blood vessel networks. An example of a tumour vasculature imaged using mesoscopic photoacoustic imaging is shown where the image is provided as input and the 3D segmentation mask predicted as output. (B) Full pre-activation residual blocks in the residual U-Net and (C) a sliding window approach is utilised to construction mask of large images.*
+## 🧰 Key Features
 
-## Installation
-To install the package from source, download the latest release on the VAN-GAN repository or run the following in a terminal window:
+- **3D Deep Residual U-Net** for realistic vascular structure segmentation
+- **CycleGAN-style architecture** for unpaired domain translation
+- **No identity loss** for simplified training
+- **Synthetic training images** eliminate dependence on manual labels
+- **Topological & structural constraints** for accurate domain alignment
+- **Sliding window inference** for high-resolution image volumes
+
+![Generator Architecture](Generator_Architecture.jpg)
+
+---
+
+## 🛠 Installation
+
+Clone the repository:
+
 ```bash
 git clone https://github.com/psweens/VAN-GAN.git
 ```
 
-Please ensure that cudatoolkit, cudnn and Tensorflow are correctly installed as per their installation instructions [here](https://www.tensorflow.org/install/pip).
+Install dependencies:
 
-Tensorflow and the remaining Python packages below can be installed in a [_conda_](https://www.anaconda.com/download/) environment.
-
-The remaining required Python packages can be installed using _pip_ in a terminal window:
 ```bash
 pip install opencv-python scikit-image tqdm tensorflow_addons joblib matplotlib
 ```
 
-VAN-GAN has been tested on Ubuntu 22.04.2 LTS with Python 3.9.16 and the following package versions:
-* Cuda 11.2.2
-* Cudnn 8.1.0.77
-* [Tensorflow 2.10.1](https://www.tensorflow.org)
-* Opencv-python 4.7.0.72
-* Scikit-image 0.20.0
-* [tqdm 4.65.0](https://github.com/tqdm/tqdm)
-* [Tensorflow-addons 0.20.0](https://www.tensorflow.org/addons)
-* Joblib 1.2.0
-* Matplotlib 3.7.1
+Ensure you have:
+- Python 3.9+
+- TensorFlow 2.10.1
+- CUDA 11.2.2 and cuDNN 8.1.0.77
 
-## Example Dataset
-A paired synthetic 3D image dataset composed of segmentation labels of mathematical-derived 3D vascular networks and corresponding simulated photocoustic images will be made available [here](https://doi.org/10.17863/CAM.96379) at publication. This dataset can be used to performed unsupervised training of VAN-GAN and then validate segmentation predictions using the known ground truth labels.
+We recommend using a `conda` environment for clean setup. Follow TensorFlow [GPU install guide](https://www.tensorflow.org/install/pip) for compatibility.
 
-## Code Contributors
-VAN-GAN code was originally developed by [Paul W. Sweeney](https://www.psweeney.co.uk) who continues to actively develop the framework. VAN-GAN is an open-source tool and so would benefit from suggestions and edits by all and so community development and involvement is welcomed.
+---
 
-Please get in contact in you have any questions.
+## 📦 Environment Versions (Tested)
 
-## Citation
-If you use this code or data, we kindly ask that you please cite the below:
-> [Unsupervised Segmentation of 3D Microvascular Photoacoustic Images Using Deep Generative Learning](https://doi.org/10.1002/advs.202402195)<br>
-> Paul W. Sweeney et al. *Advanced Science*
+| Tool              | Version         |
+|-------------------|-----------------|
+| Ubuntu            | 22.04.2 LTS     |
+| Python            | 3.9.16          |
+| TensorFlow        | 2.10.1          |
+| Cuda Toolkit      | 11.2.2          |
+| cuDNN             | 8.1.0.77        |
+| OpenCV            | 4.7.0.72        |
+| scikit-image      | 0.20.0          |
+| tqdm              | 4.65.0          |
+| tf-addons         | 0.20.0          |
+| joblib            | 1.2.0           |
+| matplotlib        | 3.7.1           |
 
-## Licence
-The project is licenced under the MIT Licence.
+---
 
-Code framework built upon the 2D cycleGAN implemention in Tensorflow by A.K. Nain (https://github.com/keras-team/keras-io/blob/master/examples/generative/cyclegan.py).
+## 🧪 Example Dataset
+
+A paired dataset of **simulated photoacoustic images** and **synthetic vascular segmentations** is available:
+
+📦 [Download via University of Cambridge Repository](https://doi.org/10.17863/CAM.96379)
+
+This dataset is ideal for training VAN-GAN in an unsupervised manner and validating predictions against known vascular structures.
+
+---
+
+## 🧑‍💻 Contributors
+
+Developed by [Paul W. Sweeney](https://www.psweeney.co.uk).  
+Community contributions are welcome! If you're using VAN-GAN in your work, feedback and pull requests are encouraged.
+
+---
+
+## 📖 Citation
+
+If you use VAN-GAN in your research, please cite:
+
+> [Unsupervised Segmentation of 3D Microvascular Photoacoustic Images Using Deep Generative Learning](https://doi.org/10.1002/advs.202402195)  
+> Paul W. Sweeney et al., *Advanced Science*, 2024.
+
+---
+
+## 🧾 License
+
+Licensed under the MIT License.
+
+Original CycleGAN implementation adapted from [A.K. Nain's TensorFlow example](https://github.com/keras-team/keras-io/blob/master/examples/generative/cyclegan.py).
+
+---
