@@ -348,13 +348,13 @@ def identity_loss(self, real_image, same_image, typ=None):
     Identity loss between a real image and its generated counterpart.
     """
     if typ is None:
-        return self.lambda_identity * MAE(self, real_image, same_image)
+        return self.lambda_imaging_identity * MAE(self, real_image, same_image)
     else:
         if typ == "cldice":
             real = min_max_norm_tf(real_image)
             same = min_max_norm_tf(same_image)
             loss_obj = soft_dice_cldice_loss()
-            spat_loss = reduce_mean(self, loss_obj(real, same)) * self.lambda_identity
+            spat_loss = reduce_mean(self, loss_obj(real, same)) * self.lambda_seg_identity
             return spat_loss
 
 

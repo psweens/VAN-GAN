@@ -5,8 +5,6 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
-from utils import get_vacuum, min_max_norm_tf, sobel_edge_3d
-
 
 class DatasetGen:
     def __init__(self,
@@ -136,7 +134,6 @@ class DatasetGen:
 
 
     ''' Functions to gather imaging subvolumes '''
-
     def imaging_datagen(self, typ='training'):
         """
         Generates a batch of data from the imaging_paths directory.

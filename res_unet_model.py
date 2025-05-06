@@ -281,4 +281,3 @@ class ResUNet(Model):
         x_attn = Multiply()([x, psi])
 
         return x_attn
-

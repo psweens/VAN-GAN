@@ -8,6 +8,8 @@ from joblib import Parallel, delayed
 from tensorflow.keras import layers
 from utils import min_max_norm
 from scipy.ndimage import gaussian_filter
+import scipy.signal
+from typing import Tuple, Optional, Dict, List
 
 
 class GanMonitor:
@@ -47,89 +49,236 @@ class GanMonitor:
         model.disc_A.save(os.path.join(self.model_path, "checkpoints/e{epoch}_discA".format(epoch=epoch + 1)))
         model.disc_B.save(os.path.join(self.model_path, "checkpoints/e{epoch}_discB".format(epoch=epoch + 1)))
 
-    def gaussian_weight(self, shape, sigma=1):
-        """Create a Gaussian kernel."""
+    def gaussian_window(self, shape, sigma=1):
+        """Create a Gaussian window for 2D or 3D data."""
         if len(shape) == 2:
             x = np.linspace(-1, 1, shape[0])
             y = np.linspace(-1, 1, shape[1])
             xv, yv = np.meshgrid(x, y, indexing='ij')
             kernel = np.exp(-(xv ** 2 + yv ** 2) / (2 * sigma ** 2))
-        else:
+        elif len(shape) == 3:
             x = np.linspace(-1, 1, shape[0])
             y = np.linspace(-1, 1, shape[1])
             z = np.linspace(-1, 1, shape[2])
             xv, yv, zv = np.meshgrid(x, y, z, indexing='ij')
             kernel = np.exp(-(xv ** 2 + yv ** 2 + zv ** 2) / (2 * sigma ** 2))
-        kernel /= kernel.max()  # Normalize to have max value of 1
+        else:
+            raise ValueError("Unsupported shape length: expected 2 or 3 dimensions")
+        kernel /= kernel.max()  # Normalize so the max value is 1
         kernel = kernel[..., np.newaxis]  # Add a new axis for the channel dimension
         return kernel
 
-    def stitch_subvolumes(self, gen, img, subvol_size, epoch=-1, stride=None, name=None, output_path=None,
-                          complete=False):
+    def hann_window(self, shape):
+        """Create a Hann window for 2D or 3D data."""
+        if len(shape) == 2:
+            w1 = np.hanning(shape[0])
+            w2 = np.hanning(shape[1])
+            kernel = np.outer(w1, w2)
+        elif len(shape) == 3:
+            w1 = np.hanning(shape[0])
+            w2 = np.hanning(shape[1])
+            w3 = np.hanning(shape[2])
+            # Outer product to form a 3D window:
+            kernel = np.outer(w1, w2).reshape(shape[0], shape[1], 1) * w3.reshape(1, 1, shape[2])
+        else:
+            raise ValueError("Unsupported shape length: expected 2 or 3 dimensions")
+        kernel /= kernel.max()
+        kernel = kernel[..., np.newaxis]
+        return kernel
+
+    def tukey_window(self, shape, alpha=0.5):
+        """Create a Tukey window for 2D or 3D data."""
+        if len(shape) == 2:
+            w1 = scipy.signal.tukey(shape[0], alpha=alpha)
+            w2 = scipy.signal.tukey(shape[1], alpha=alpha)
+            kernel = np.outer(w1, w2)
+        elif len(shape) == 3:
+            w1 = scipy.signal.tukey(shape[0], alpha=alpha)
+            w2 = scipy.signal.tukey(shape[1], alpha=alpha)
+            w3 = scipy.signal.tukey(shape[2], alpha=alpha)
+            kernel = np.outer(w1, w2).reshape(shape[0], shape[1], 1) * w3.reshape(1, 1, shape[2])
+        else:
+            raise ValueError("Unsupported shape length: expected 2 or 3 dimensions")
+        kernel /= kernel.max()
+        kernel = kernel[..., np.newaxis]
+        return kernel
+
+    def get_window(self, window_type, shape, **kwargs):
         """
-        Stitch together subvolumes to create a full volume prediction.
+        Returns a window (weighting function) for the given shape and type.
+
+        window_type: one of 'gaussian', 'hann', or 'tukey'
+        shape: tuple of dimensions (for 2D, e.g., (height, width); for 3D, (height, width, depth))
+        kwargs: extra parameters (e.g., sigma for Gaussian, alpha for Tukey)
         """
-        # Calculate stride
+        window_type = window_type.lower()
+        if window_type == 'gaussian':
+            sigma = kwargs.get('sigma', 1)
+            return self.gaussian_window(shape, sigma=sigma)
+        elif window_type == 'hann':
+            return self.hann_window(shape)
+        elif window_type == 'tukey':
+            alpha = kwargs.get('alpha', 0.5)
+            return self.tukey_window(shape, alpha=alpha)
+        else:
+            raise ValueError("Unsupported window type. Choose 'gaussian', 'hann', or 'tukey'.")
+
+    def stitch_subvolumes(
+            self,
+            gen,
+            img: np.ndarray,
+            subvol_size: Tuple[int, int, int, int],
+            *,
+            epoch: int = -1,
+            stride: Optional[Tuple[int, int, int]] = None,
+            name: Optional[str] = None,
+            output_path: Optional[str] = None,
+            complete: bool = False,
+            window_type: str = 'tukey',
+            window_params: Optional[Dict] = None,
+            batch_size: int = 16,
+    ):
+        """Stitch together sub‑volumes to create a full‑volume prediction using an
+        arbitrary apodisation window **with batched inference**.
+
+        Parameters
+        ----------
+        gen : tf.keras.Model | Callable
+            The neural network (or generator function) used for inference.
+        img : np.ndarray
+            Input image/volume. Shape **(H, W, D, C)** for 3‑D or **(H, W, C)** for 2‑D.
+        subvol_size : tuple
+            Nominal sub‑volume size **(N, h, w, d)** where **N** is the batch axis –
+            retained for backwards compatibility but ignored internally.
+        stride : tuple | None, optional
+            Sliding‑window step. Defaults to **½** of each spatial dim.
+        name : str, optional
+            Base name of the output TIFF.
+        output_path : str | Path, optional
+            Directory for the TIFF.
+        complete : bool, default = ``False``
+            If *True*, reflect‑pads *img* so every pixel/voxel is covered.
+        window_type : {'tukey', 'hann', 'gaussian'}, default = 'tukey'
+            Type of apodisation window.
+        window_params : dict, optional
+            Extra kwargs for the chosen window.
+        batch_size : int, default = 8
+            Maximum number of patches processed in one forward pass.
+        """
+
+        # ---------------------------------------------------------------------
+        # 0. Input sanitisation & defaults
+        # ---------------------------------------------------------------------
+        if window_params is None:
+            window_params = {}
+
         if stride is None:
             stride = [max(1, x // 2) for x in subvol_size[1:4]]
 
-        # Adjust for 2D case
+        # 2‑D convenience adjustments ------------------------------------------------
         if self.dims == 2:
             subvol_size = list(subvol_size)
-            subvol_size[3] = 1  # Set depth to 1 in the 2D case
+            subvol_size[3] = 1  # depth = 1
             subvol_size = tuple(subvol_size)
             stride[2] = 1
 
-        # Padding if complete is True
+        # ---------------------------------------------------------------------
+        # 1. Optional padding to guarantee full coverage
+        # ---------------------------------------------------------------------
         if complete:
             pad_factor = [self.imgSize[i] / img.shape[i - 1] for i in range(1, 4)]
-
             if subvol_size[3] == img.shape[2]:
                 pad_factor[2] = 0
                 stride[2] = 0
-
             pad = [int(0.5 * pad_factor[i] * img.shape[i]) for i in range(3)]
             if self.dims == 2:
-                padding = [(p, p) for p in pad[:2]] + [(0, 0)]  # Padding for the color channel correctly
+                padding = [(pad[0], pad[0]), (pad[1], pad[1]), (0, 0)]
             else:
-                padding = [(p, p) for p in pad] + [(0, 0)]  # Padding for the color channel correctly
-
+                padding = [(pad[0], pad[0]), (pad[1], pad[1]), (pad[2], pad[2]), (0, 0)]
             img = np.pad(img, padding, mode='reflect')
+        else:
+            pad = [0, 0, 0]
 
+        # ---------------------------------------------------------------------
+        # 2. Shapes & buffers
+        # ---------------------------------------------------------------------
         if self.dims == 2:
             H, W, C = img.shape
             D = 1
         else:
             H, W, D, C = img.shape
 
-        # Initialize the prediction and weight map
-        pred = np.zeros(img.shape, dtype='float32')
-        weight_map = np.zeros(img.shape, dtype='float32')
+        pred = np.zeros_like(img, dtype=np.float32)
+        weight_map = np.zeros_like(img, dtype=np.float32)
 
-        # Precompute Gaussian weight
+        # ---------------------------------------------------------------------
+        # 3. Pre‑compute the apodisation window (NumPy + TensorFlow)
+        # ---------------------------------------------------------------------
         if self.dims == 2:
-            gauss_weight = self.gaussian_weight((subvol_size[1], subvol_size[2], 1),
-                                                sigma=1)  # For 2D, remove extra dimension
-            gauss_weight = np.squeeze(gauss_weight, axis=-1)  # Ensure gauss_weight is (height, width, channels)
+            win_shape = (subvol_size[1], subvol_size[2], 1)
         else:
-            gauss_weight_shape = (
-                subvol_size[1], subvol_size[2], subvol_size[3] if subvol_size[3] != img.shape[2] else 1)
-            gauss_weight = self.gaussian_weight(gauss_weight_shape, sigma=1)
+            win_shape = (
+                subvol_size[1],
+                subvol_size[2],
+                subvol_size[3] if subvol_size[3] != img.shape[2] else 1,
+            )
 
-        if self.dims == 3 and subvol_size[3] == img.shape[2]:  # No striding in the z-dimension for 3D case
-            gauss_weight = np.repeat(gauss_weight[:, :, np.newaxis, :], D, axis=2)
+        window_np = self.get_window(window_type, win_shape, **window_params).astype(np.float32)
+        window_tf = tf.convert_to_tensor(window_np, dtype=tf.float32)  # on‑device copy
 
-        # Calculate the steps for sliding window
-        row_steps = range(0, H - subvol_size[1] + 1, stride[0])
-        col_steps = range(0, W - subvol_size[2] + 1, stride[1])
-        dep_steps = [0] if subvol_size[3] == img.shape[2] else range(0, D - subvol_size[3] + 1, stride[2])
+        # If the sub‑volume spans the full depth, repeat window along z
+        if self.dims == 3 and subvol_size[3] == img.shape[2]:
+            window_np = np.repeat(window_np[:, :, np.newaxis, :], D, axis=2)
+            window_tf = tf.repeat(window_tf[:, :, tf.newaxis, :], D, axis=2)
 
-        if complete:
-            print(f"Padding applied: {pad}")
-            print(f"Stride length: {stride}")
-            print(f"Subvolume size: {subvol_size}")
+        # ---------------------------------------------------------------------
+        # 4. Generate sliding‑window grid
+        # ---------------------------------------------------------------------
+        row_steps = list(range(0, H - subvol_size[1] + 1, stride[0]))
+        col_steps = list(range(0, W - subvol_size[2] + 1, stride[1]))
+        if subvol_size[3] == img.shape[2]:
+            dep_steps = [0]
+        else:
+            dep_steps = list(range(0, D - subvol_size[3] + 1, stride[2]))
 
-        # Stitching process
+        # ---------------------------------------------------------------------
+        # 5. Batched inference helpers
+        # ---------------------------------------------------------------------
+        batch_subvols: List[np.ndarray] = []
+        batch_meta: List[Tuple[slice, slice, slice, Tuple[int, int, int]]] = []
+
+        def flush_batch():
+            """Run accumulated batch through *gen* and scatter weighted predictions."""
+            nonlocal batch_subvols, batch_meta, pred, weight_map
+            if not batch_subvols:
+                return
+
+            # -- Stack and optional preprocessing ---------------------------------
+            batch_arr = np.stack(batch_subvols, axis=0).astype(np.float32)  # (B, h, w, d, C)
+            if self.process_imaging_domain is not None:
+                batch_arr = self.process_imaging_domain(batch_arr)
+
+            batch_tf = tf.convert_to_tensor(batch_arr, dtype=tf.float32)
+            preds_tf = gen(batch_tf, training=False)  # forward pass
+            preds_tf *= window_tf  # weight **after** inference (GPU)
+            preds_np = preds_tf.numpy()  # back to CPU once
+
+            # -- Scatter weighted predictions and window --------------------------
+            for p, (r_slice, c_slice, d_slice, orig_shape) in zip(preds_np, batch_meta):
+                hr, wr, dr = orig_shape
+                if self.dims == 2:
+                    pred[r_slice, c_slice, 0] += p[:hr, :wr, 0]
+                    weight_map[r_slice, c_slice, 0] += window_np[:hr, :wr, 0]
+                else:
+                    pred[r_slice, c_slice, d_slice] += p[:hr, :wr, :dr]
+                    weight_map[r_slice, c_slice, d_slice] += window_np[:hr, :wr, :dr]
+
+            batch_subvols.clear()
+            batch_meta.clear()
+
+        # ------------------------------------------------------------------
+        # 6. Traverse grid & accumulate patches ----------------------------
+        # ------------------------------------------------------------------
         for start_row in row_steps:
             for start_col in col_steps:
                 for start_dep in dep_steps:
@@ -137,81 +286,63 @@ class GanMonitor:
                     end_col = min(start_col + subvol_size[2], W)
                     end_dep = min(start_dep + subvol_size[3], D)
 
-                    row_slice = slice(start_row, end_row)
-                    col_slice = slice(start_col, end_col)
-                    dep_slice = slice(start_dep, end_dep)
+                    r_slice = slice(start_row, end_row)
+                    c_slice = slice(start_col, end_col)
+                    d_slice = slice(start_dep, end_dep)
 
-                    subvol = img[row_slice, col_slice, dep_slice]
+                    subvol = img[r_slice, c_slice, d_slice]
 
-                    # Determine padding needed for subvolume
-                    pad_height = subvol_size[1] - subvol.shape[0]
-                    pad_width = subvol_size[2] - subvol.shape[1]
-                    pad_depth = subvol_size[3] - subvol.shape[2]
-
-                    # Apply padding if necessary
-                    if pad_height > 0 or pad_width > 0 or pad_depth > 0:
-                        pad_dims = [(0, pad_height), (0, pad_width), (0, pad_depth)]
-                        if subvol.ndim == 4:  # Add padding for the channel dimension
+                    # Pad to nominal size where necessary -------------------
+                    pad_h = subvol_size[1] - subvol.shape[0]
+                    pad_w = subvol_size[2] - subvol.shape[1]
+                    pad_d = subvol_size[3] - subvol.shape[2]
+                    if pad_h or pad_w or pad_d:
+                        pad_dims = [(0, pad_h), (0, pad_w), (0, pad_d)]
+                        if subvol.ndim == 4:
                             pad_dims.append((0, 0))
                         subvol = np.pad(subvol, pad_dims, mode='reflect')
 
-                    # Expand dimensions and predict
-                    subvol = np.expand_dims(subvol, axis=0)
+                    batch_subvols.append(subvol)
+                    batch_meta.append((r_slice, c_slice, d_slice,
+                                       (end_row - start_row,
+                                        end_col - start_col,
+                                        end_dep - start_dep)))
 
-                    if self.process_imaging_domain is not None:
-                        subvol = self.process_imaging_domain(subvol)
+                    if len(batch_subvols) == batch_size:
+                        flush_batch()
 
-                    # Ensure `pred_subvol` is a NumPy array
-                    pred_subvol = gen(subvol, training=False)[0].numpy()  # Convert TensorFlow tensor to NumPy
+        # Flush any remainder -----------------------------------------------------
+        flush_batch()
 
-                    # Accumulate predictions and weights
-                    if self.dims == 2:
-                        # Explicitly reshape pred_subvol and gauss_weight to avoid broadcasting issues
-                        pred_subvol = pred_subvol[:end_row - row_slice.start,
-                                      :end_col - col_slice.start, :]
-
-                        gauss_weight_reshaped = gauss_weight[:end_row - row_slice.start, :end_col - col_slice.start, :]
-
-                        np.add(pred[row_slice, col_slice, 0],
-                               pred_subvol[:, :, 0] * gauss_weight_reshaped[:, :, 0],
-                               out=pred[row_slice, col_slice, 0])
-
-                        np.add(weight_map[row_slice, col_slice, 0], gauss_weight_reshaped[:, :, 0],
-                               out=weight_map[row_slice, col_slice, 0])
-                    else:
-                        np.add.at(pred, (row_slice, col_slice, dep_slice),
-                                  pred_subvol[:end_row - row_slice.start,
-                                  :end_col - col_slice.start,
-                                  :end_dep - dep_slice.start] * gauss_weight[:end_row - row_slice.start,
-                                                                :end_col - col_slice.start,
-                                                                :end_dep - dep_slice.start])
-
-                        np.add.at(weight_map, (row_slice, col_slice, dep_slice),
-                                  gauss_weight[:end_row - row_slice.start,
-                                  :end_col - col_slice.start,
-                                  :end_dep - dep_slice.start])
-
-        # Normalize prediction by weight map
+        # ------------------------------------------------------------------
+        # 7. Normalise by accumulated weights ------------------------------------
+        # ------------------------------------------------------------------
         np.divide(pred, weight_map, out=pred, where=weight_map != 0)
 
-        # Remove padding from the final prediction if complete
+        # ------------------------------------------------------------------
+        # 8. Remove padding if requested -----------------------------------------
+        # ------------------------------------------------------------------
         if complete:
             if self.dims == 2:
                 pred = pred[pad[0]:H - pad[0], pad[1]:W - pad[1], :]
             else:
                 pred = pred[pad[0]:H - pad[0], pad[1]:W - pad[1], pad[2]:D - pad[2], :]
 
-        # Normalize the prediction to [0, 255]
+        # ------------------------------------------------------------------
+        # 9. Normalise to 0‑255 and save TIFF -------------------------------------
+        # ------------------------------------------------------------------
         pred = 255 * min_max_norm(pred)
-        pred = pred.astype('uint8')
+        pred = pred.astype(np.uint8)
 
-        # Save the prediction as a TIFF image
         if self.dims == 2:
-            pred = np.squeeze(pred)
-            io.imsave(os.path.join(output_path, f"{name}.tiff"), pred)
+            io.imsave(os.path.join(output_path, f"{name}.tiff"), np.squeeze(pred))
         else:
-            io.imsave(os.path.join(output_path, f"{name}.tiff"), np.transpose(pred, (2, 0, 1, 3)), bigtiff=True,
-                      check_contrast=False)
+            io.imsave(
+                os.path.join(output_path, f"{name}.tiff"),
+                np.transpose(pred, (2, 0, 1, 3)),  # (depth, H, W, C)
+                bigtiff=True,
+                check_contrast=False,
+            )
 
     def imagePlotter(self, epoch, filename, setlist, dataset, genX, genY, nfig=6, outputFull=True, process_img=False):
         """
@@ -306,7 +437,7 @@ class GanMonitor:
                     dpi=300)
 
         plt.tight_layout()
-        #plt.show(block=False)
+        plt.show(block=False)
         plt.close()
 
         # Generate 3D predictions, stitch and save
@@ -332,26 +463,26 @@ class GanMonitor:
         if epoch == args.INITIATE_LR_DECAY:
             model.gen_I_optimizer.lr = tf.keras.optimizers.schedules.PolynomialDecay(
                 initial_learning_rate=args.INITIAL_LR,
-                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY - 10) * args.train_steps,
-                end_learning_rate=2e-6,
+                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY) * args.train_steps,
+                end_learning_rate=2e-8,
                 power=1)
 
             model.gen_S_optimizer.lr = tf.keras.optimizers.schedules.PolynomialDecay(
                 initial_learning_rate=args.INITIAL_LR,
-                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY - 10) * args.train_steps,
-                end_learning_rate=2e-6,
+                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY) * args.train_steps,
+                end_learning_rate=2e-8,
                 power=1)
 
             model.disc_I_optimizer.lr = tf.keras.optimizers.schedules.PolynomialDecay(
                 initial_learning_rate=args.INITIAL_LR,
-                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY - 10) * args.train_steps,
-                end_learning_rate=2e-6,
+                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY) * args.train_steps,
+                end_learning_rate=2e-8,
                 power=1)
 
             model.disc_S_optimizer.lr = tf.keras.optimizers.schedules.PolynomialDecay(
                 initial_learning_rate=args.INITIAL_LR,
-                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY - 10) * args.train_steps,
-                end_learning_rate=2e-6,
+                decay_steps=(args.EPOCHS - args.INITIATE_LR_DECAY) * args.train_steps,
+                end_learning_rate=2e-8,
                 power=1)
 
     def updateDiscriminatorNoise(self, model, init_noise, epoch, args):

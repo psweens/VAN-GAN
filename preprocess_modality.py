@@ -22,8 +22,8 @@ def preprocess_rsom(img, lower_thresh=0.05, upper_thresh=99.95):
     - np.ndarray: The preprocessed 3D numpy array.
     """
 
-    # if img.shape[2] > 140 and img.shape[2] > 180:
-    #     img = img[:, :, 20:(img.shape[2] - 20)]
+    if img.shape[2] > 140 and img.shape[2] > 180:
+        img = img[:, :, 20:(img.shape[2] - 20)]
 
     # Slice-wise Z-Score Normalisation
     for z in range(img.shape[2]):

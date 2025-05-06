@@ -20,7 +20,7 @@ def epoch_sweep(args, vangan_model, plotter, test_path='', start=100, end=200, s
     """
 
     for i in range(start, end + 1, step):
-        print(i)
+        print('\nSampling Epoch %i' %i)
         vangan_model.load_checkpoint(epoch=i,
                                      newpath=args.output_dir+'/checkpoints')
 

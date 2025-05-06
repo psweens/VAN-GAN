@@ -10,6 +10,7 @@ from tensorflow.keras.layers import (
     SpatialDropout3D
 )
 
+
 def npy_padding(x, padding=(1, 1, 1)):
     return np.pad(x, ((padding[0], padding[0]),
                       (padding[1], padding[1]),
@@ -156,7 +157,7 @@ def downsample(
 ):
     """
     Downsamples an input tensor using a 3D convolutional layer.
-    
+
     Args:
         x (Tensor): Input tensor.
         filters (int): Number of output filters in the convolutional layer.
@@ -172,7 +173,7 @@ def downsample(
         padding_size (tuple of ints, optional): Padding size for ReflectionPadding3D. Defaults to (1, 1, 1).
         use_layer_noise (bool, optional): Whether to add Gaussian noise after ReflectionPadding3D. Defaults to False.
         noise_std (float, optional): Standard deviation of Gaussian noise. Defaults to 0.1.
-    
+
     Returns:
         Tensor: The downsampled tensor.
     """
@@ -313,6 +314,7 @@ def upsample(
 class StandardisationLayer(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
         super(StandardisationLayer, self).__init__(**kwargs)
+
     def call(self, inputs):
         # Normalize the output tensor to have mean 0 and std 1
         return ((inputs - tf.reduce_mean(inputs, axis=(1, 2, 3, 4), keepdims=True))
