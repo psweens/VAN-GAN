@@ -32,7 +32,8 @@ class TB_Summary:
 
     def losses(self, results):
         for key, value in results.items():
-            if key in ["gen_I_lr", "gen_S_lr", "disc_I_lr", "disc_S_lr"]:
+            if key in ["binariness_fake_S", "clip_upper_prop", "clip_lower_prop", "dynamic_clip_val",
+                       "grad_norm_gen_IS", "grad_norm_gen_SI", "grad_norm_disc_I", "grad_norm_disc_S"]:
                 pass
             else:
                 value = tf.math.reduce_mean(value)

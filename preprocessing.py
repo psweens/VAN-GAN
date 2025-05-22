@@ -1,233 +1,268 @@
-import os
-import shutil
-import random
+# preprocess_hdf5.py
+# ---------------------------------------------------------------------------
+# Convert raw TIFF stacks → chunked-LZF HDF5 volumes for DatasetGen.
+# ---------------------------------------------------------------------------
+import os, shutil, random, multiprocessing, h5py
 import numpy as np
-import skimage.io as sk
 from scipy import stats
-
 from joblib import Parallel, delayed
-import multiprocessing
+import skimage.io as sk
 
-from utils import min_max_norm, check_nan, save_dict, load_dict, resize_volume, load_volume
+from utils import (
+    min_max_norm,
+    check_nan,
+    save_dict,
+    load_dict,
+    resize_volume,
+    load_volume,
+)
 
 
 class DataPreprocessor:
-    def __init__(self, args=None, raw_path=None, main_dir=None, partition_id='', partition_filename=None,
-                 tiff_size=(600, 600, 700),
-                 target_size=(600, 600, 700),
-                 num_cores=multiprocessing.cpu_count() - 1):
-        self.save_filtered = None
-        self.resize = None
-        self.preprocess_fn = None
+    """
+    Prepares three partitions (train / val / test) and writes each volume
+    to a .h5 file with a single dataset:
+
+        ─ partition A  →  /image     (float32, shape (X,Y[,Z],C))
+        ─ partition B  →  /label     (float32, shape (X,Y[,Z],1))
+
+    The layout matches the expected input of the HDF5-enabled DatasetGen.
+    """
+
+    # ─────────────────────────── init ───────────────────────────────
+    def __init__(
+        self,
+        args=None,
+        raw_path=None,
+        main_dir=None,
+        *,
+        partition_id="",
+        partition_filename=None,
+        tiff_size=(600, 600, 700),
+        target_size=(600, 600, 700),
+        num_cores=multiprocessing.cpu_count() - 1,
+    ):
         self.raw_path = raw_path
         self.main_dir = main_dir
-        self.partition_id = partition_id
-        self.partition_filename = partition_filename
+        self.partition_id = partition_id            # "A" or "B"
+        self.partition_filename = partition_filename or f"partition_{partition_id}.pkl"
         self.tiff_size = tiff_size
         self.target_size = target_size
-        self.train_files = None
-        self.validate_files = None
-        self.test_files = None
-        self.partition = {}
-        self.data_type = 'float32'
+        self.partition: dict[str, np.ndarray] = {}
+        self.data_type = "float32"
 
+        # runtime options
+        self.preprocess_fn = None
+        self.resize = False
+        self.save_filtered = False
+
+        # parallelism
         self.NUM_CORES = int(0.8 * num_cores)
+
+        # model-related parameters (only if args supplied)
         if args is not None:
             self.DIMENSIONS = args.DIMENSIONS
             self.CHANNELS = args.CHANNELS
+            # choose a reasonable default chunk shape ≈ patch size
+            if self.DIMENSIONS == 2:
+                self.chunk_shape = (
+                    min(256, args.SUBVOL_PATCH_SIZE[0]),
+                    min(256, args.SUBVOL_PATCH_SIZE[1]),
+                    self.CHANNELS,
+                )
+            else:
+                self.chunk_shape = (
+                    min(128, args.SUBVOL_PATCH_SIZE[0]),
+                    min(128, args.SUBVOL_PATCH_SIZE[1]),
+                    min(16,  args.SUBVOL_PATCH_SIZE[2]),
+                    self.CHANNELS if partition_id == "A" else 1,
+                )
+        else:  # fall-back chunk shape
+            self.DIMENSIONS = 3
+            self.CHANNELS = 1
+            self.chunk_shape = None
 
-    def save_partition(self, save_path=None):
-        """
-        Save the partition data into files in the specified directory.
-        
-        Args:
-            save_path (str): The directory where the partition files will be saved.
-        
-        Returns:
-            None
-        """
-
-        if save_path is None:
-            raise ValueError("Partition save_path is not provided.")
-
-        # Update partition directories
-        new_partition = {}
-        train_arr = np.empty(len(self.partition['training']), dtype=object)
-        val_arr = np.empty(len(self.partition['validation']), dtype=object)
-        test_arr = np.empty(len(self.partition['testing']), dtype=object)
-
-        # Update the training partition directory
-        for i in range(len(self.partition['training'])):
-            file = self.partition['training'][i]
-            file, _ = os.path.splitext(file)
-            file = file + '.npy'
-            file = os.path.join(save_path, 'train' + self.partition_id, file)
-            train_arr[i] = file
-
-        #  Update the validation partition directory
-        for i in range(len(self.partition['validation'])):
-            file = self.partition['validation'][i]
-            file, _ = os.path.splitext(file)
-            file = file + '.npy'
-            file = os.path.join(save_path, 'val' + self.partition_id, file)
-            val_arr[i] = file
-
-        #  Update the testing partition directory
-        for i in range(len(self.partition['testing'])):
-            file = self.partition['testing'][i]
-            file, _ = os.path.splitext(file)
-            file = file + '.npy'
-            file = os.path.join(save_path, 'test' + self.partition_id, file)
-            test_arr[i] = file
-
-        new_partition['training'] = train_arr
-        new_partition['validation'] = val_arr
-        new_partition['testing'] = test_arr
-
-        save_dict(new_partition, os.path.join(save_path, self.partition_filename))
-
-        self.partition = new_partition
-
-    def load_partition(self, file_path):
-        print('*** Loading Dataset %s Partition ***' % self.partition_id)
-        self.partition = load_dict(file_path)
-
+    # ───────────────────────── partition helpers ────────────────────
     def split_dataset(self):
-
-        # Shuffle raw data list
         files = os.listdir(self.raw_path)
         random.shuffle(files)
 
-        # Split data into train/validate/test
-        print('Splitting dataset ...')
-        self.train_files, self.test_files = np.split(files, [int(len(files) * 0.9)])
-        self.train_files, self.validate_files = np.split(self.train_files,
-                                                         [int(len(self.train_files,) * 0.8)])
+        n = len(files)
+        train, test = np.split(files, [int(0.9 * n)])
+        train, val  = np.split(train, [int(0.8 * len(train))])
 
-        # Save partitioned dataset
-        self.partition['training'] = self.train_files
-        self.partition['validation'] = self.validate_files
-        self.partition['testing'] = self.test_files
+        self.partition = {
+            "training":   np.array(train, dtype=object),
+            "validation": np.array(val,   dtype=object),
+            "testing":    np.array(test,  dtype=object),
+        }
 
-    def move_dataset(self):
-        for file in range(len(self.partition['training'])):
-            shutil.move(os.path.join(self.raw_path, self.partition['training'][file]),
-                        os.path.join(self.main_dir, 'train' + self.partition_id))
-        for file in range(len(self.partition['validation'])):
-            shutil.move(os.path.join(self.raw_path, self.partition['validation'][file]),
-                        os.path.join(self.main_dir, 'val' + self.partition_id))
-        for file in range(len(self.partition['testing'])):
-            shutil.move(os.path.join(self.raw_path, self.partition['testing'][file]),
-                        os.path.join(self.main_dir, 'test' + self.partition_id))
+    def save_partition(self, save_path: str):
+        if not save_path:
+            raise ValueError("save_path must be provided")
 
-    def preprocess(self, preprocess_fn=None, resize=False, save_filtered=False):
+        def _replace(fname, split):
+            stem, _ = os.path.splitext(fname)
+            return os.path.join(save_path, f"{split}{self.partition_id}", stem + ".h5")
 
-        print('*** Preprocessing partition %s images ***' % self.partition_id)
-        self.split_dataset()
+        new_part = {
+            split: np.array([_replace(f, lab) for f in arr], dtype=object)
+            for (split, arr), lab in zip(
+                self.partition.items(), ("train", "val", "test")
+            )
+        }
+        save_dict(new_part, os.path.join(save_path, self.partition_filename))
+        self.partition = new_part
+
+    # ───────────────────────── public API ───────────────────────────
+    def preprocess(
+        self,
+        preprocess_fn=None,
+        resize=False,
+        save_filtered=False,
+    ):
+        print(f"*** Pre-processing partition {self.partition_id} ***")
 
         self.preprocess_fn = preprocess_fn
         self.resize = resize
         self.save_filtered = save_filtered
 
-        print('Processing training data ...')
-        Parallel(n_jobs=self.NUM_CORES, verbose=50)(delayed(
-            self.process_tiff)(file=self.partition['training'][file],
-                               label='train') for file in range(len(self.partition['training'])))
+        # ensure output folders exist
+        for split in ("train", "val", "test"):
+            os.makedirs(os.path.join(self.main_dir, f"{split}{self.partition_id}"),
+                        exist_ok=True)
+        if save_filtered:
+            os.makedirs(os.path.join(self.main_dir, "filtered",
+                                      f"{split}{self.partition_id}"), exist_ok=True)
 
-        print('Processing validation data ...')
-        Parallel(n_jobs=self.NUM_CORES, verbose=50)(delayed(
-            self.process_tiff)(file=self.partition['validation'][file],
-                               label='val') for file in range(len(self.partition['validation'])))
+        self.split_dataset()
 
-        print('Processing testing data ...')
-        Parallel(n_jobs=self.NUM_CORES, verbose=50)(delayed(
-            self.process_tiff)(file=self.partition['testing'][file],
-                               label='test') for file in range(len(self.partition['testing'])))
+        # --- parallel processing of TIFF stacks --------------------
+        def _par(func, files, label):
+            return Parallel(n_jobs=self.NUM_CORES, verbose=50)(
+                delayed(func)(file=f, split_label=label) for f in files
+            )
+
+        _par(self._process_one, self.partition["training"],   "train")
+        _par(self._process_one, self.partition["validation"], "val")
+        _par(self._process_one, self.partition["testing"],    "test")
 
         self.save_partition(self.main_dir)
 
-    def process_tiff(self, file, label=''):
-
-        """
-        Process a TIFF image file.
-        
-        Args:
-            file (str): The name of the file to be processed
-            label (str): The label to be appended to the processed image
-        
-        Returns:
-            None
-        """
-
-        stack = load_volume(os.path.join(self.raw_path, file), datatype=self.data_type, normalise=True)
-
-        file, ext = os.path.splitext(file)
-        # if partition_id == 'A':
+    # ───────────────────────── single-file worker ───────────────────
+    def _process_one(self, file, *, split_label):
+        # -------- load & normalise (unchanged) -------------------
+        stack = load_volume(os.path.join(self.raw_path, file),
+                            datatype=self.data_type,
+                            normalise=True)
         if self.DIMENSIONS == 3:
             stack = np.transpose(stack, (1, 2, 0))
-
-
-        # if self.partition_id == 'B':
-        #     stack = get_vacuum(stack, self.DIMENSIONS) # Reduce bounding box to tree size
 
         if self.preprocess_fn is not None:
             stack = self.preprocess_fn(stack)
 
-        if not self.tiff_size == self.target_size and self.resize:
-            stack = (resize_volume(stack, self.target_size)).astype(self.data_type)
-            if self.partition_id == 'B':
-                stack[stack < 0.] = 0.0
-                stack[stack > 255.] = 255
+        if self.resize and (self.tiff_size != self.target_size):
+            stack = resize_volume(stack, self.target_size).astype(self.data_type)
+            if self.partition_id == "B":
+                stack = np.clip(stack, 0, 255)
 
-        if self.partition_id == 'B':
+        if self.partition_id == "B":
             stack = min_max_norm(stack)
             mode, _ = stats.mode(stack, axis=None)
             if mode == 1:
-                stack -= 1.
-                stack = abs(stack)
+                stack = np.abs(stack - 1.0)
             stack = (stack - 0.5) / 0.5
+            stack[stack < 0] = -1.0
+            stack[stack >= 0] = 1.0
 
-        if self.partition_id == 'B':
-            stack[stack < 0.] = -1.0
-            stack[stack >= 0.] = 1.0
+        if check_nan(stack):
+            print("NaN detected in", file)
+            return
 
-        if not check_nan(stack):
+        # ------------- add channel dim where needed --------------
+        if self.partition_id == "B":
+            stack = stack[..., None]                       # label → 1-channel
+            dset_name = "label"
+        else:                                              # imaging
+            if self.CHANNELS == 1:
+                stack = stack[..., None]
+            dset_name = "image"
 
-            if self.save_filtered:
-                arr_out = os.path.join(os.path.join(self.main_dir, 'filtered'),
-                                       label + self.partition_id, file + '.tiff')
-                if ext == '.npy':
-                    sk.imsave(arr_out, (stack * 127.5 + 127.5).astype('uint8'), bigtiff=False, check_contrast=False)
+        # ------------- dynamic chunk shape  ----------------------
+        # aim for ~128 kB chunks but never bigger than the data shape
+        def _auto_chunks(shape, target_bytes=128 * 1024, dtype=np.float32):
+            # start with full shape then iteratively halve longest axes
+            chunk = list(shape)
+            bytes_per_elem = np.dtype(dtype).itemsize
+            while np.prod(chunk) * bytes_per_elem > target_bytes:
+                # halve the largest dimension (>1)
+                idx = int(np.argmax(chunk))
+                if chunk[idx] > 1:
+                    chunk[idx] = (chunk[idx] + 1) // 2
                 else:
-                    if self.DIMENSIONS == 2:
-                        sk.imsave(arr_out, (stack * 127.5 + 127.5).astype('uint8'), bigtiff=False, check_contrast=False)
-                    else:
-                        sk.imsave(arr_out, (np.transpose(stack, (2, 0, 1)) * 127.5 + 127.5).astype('float32'),
-                                  bigtiff=False, check_contrast=False)
+                    break
+            return tuple(chunk)
 
-            if self.partition_id == 'B':
-                np.save(os.path.join(self.main_dir, label + self.partition_id, file),
-                        np.expand_dims(stack, axis=self.DIMENSIONS))
+        chunk_shape = _auto_chunks(stack.shape)
+
+        # ------------- write HDF5  -------------------------------
+        dst_dir = os.path.join(self.main_dir, f"{split_label}{self.partition_id}")
+        os.makedirs(dst_dir, exist_ok=True)
+        h5_path = os.path.join(dst_dir, os.path.splitext(file)[0] + ".h5")
+
+        with h5py.File(h5_path, "w") as f:
+            f.create_dataset(
+                dset_name,
+                data=stack.astype("float32"),
+                chunks=chunk_shape,
+                compression="lzf",
+                shuffle=True,
+            )
+
+        # ----- save filtered PNG preview (optional) ---------------
+        if self.save_filtered:
+            out_png = os.path.join(
+                self.main_dir, "filtered",
+                f"{split_label}{self.partition_id}",
+                os.path.splitext(file)[0] + ".tiff",
+            )
+            if self.DIMENSIONS == 3:
+                sk.imsave(
+                    out_png,
+                    (np.transpose(stack, (2, 0, 1)) * 127.5 + 127.5).astype("uint8"),
+                    bigtiff=False,
+                    check_contrast=False,
+                )
             else:
-                if self.DIMENSIONS == 2 and self.CHANNELS == 3:
-                    np.save(os.path.join(self.main_dir, label + self.partition_id, file), stack)
-                else:
-                    np.save(os.path.join(self.main_dir, label + self.partition_id, file),
-                            np.expand_dims(stack, axis=self.DIMENSIONS))
-        else:
-            print('NaN detected ...')
+                sk.imsave(
+                    out_png, (stack * 127.5 + 127.5).astype("uint8"),
+                    bigtiff=False, check_contrast=False
+                )
 
-    def process_new_data(self, current_path, new_path, tiff_size=None, target_size=None, preprocess_fn=None,
-                         resize=None):
+    # ───────────────────────── util: load existing partition ───────
+    def load_partition(self, file_path):
+        print(f"*** Loading dataset {self.partition_id} partition ***")
+        self.partition = load_dict(file_path)
 
+    # ───────────────────────── util: process unseen data ───────────
+    def process_new_data(
+        self,
+        current_path,
+        new_path,
+        *,
+        tiff_size=None,
+        target_size=None,
+        preprocess_fn=None,
+        resize=False,
+    ):
         self.raw_path = current_path
         self.main_dir = new_path
-        self.tiff_size = tiff_size
-        self.target_size = target_size
+        self.tiff_size = tiff_size or self.tiff_size
+        self.target_size = target_size or self.target_size
         self.preprocess_fn = preprocess_fn
         self.resize = resize
         self.save_filtered = False
 
-        files = os.listdir(current_path)
-        for file in files:
-            self.process_tiff(file=file)
+        os.makedirs(new_path, exist_ok=True)
+        for f in os.listdir(current_path):
+            self._process_one(file=f, split_label="new")

@@ -26,7 +26,7 @@ def min_max_norm(data):
     return (data - dmin) / (dmax - dmin)
 #
 
-def min_max_norm_tf(arr, axis=None, epsilon=1e-8):
+def min_max_norm_tf(arr, axis=None, eps=1.e-8):
     """
     Performs min-max normalisation on a given array using TensorFlow library.
 
@@ -47,7 +47,10 @@ def min_max_norm_tf(arr, axis=None, epsilon=1e-8):
         min_val = tf.reduce_min(arr, axis=axis, keepdims=True)
         max_val = tf.reduce_max(arr, axis=axis, keepdims=True)
 
-    return (arr - min_val) / (max_val - min_val + epsilon)
+    rng = max_val - min_val
+    return tf.where(rng > eps,
+                    (arr - min_val) / rng,
+                    tf.zeros_like(arr))
 
 
 def rescale_arr_tf(arr, alpha=-0.5, beta=0.5):

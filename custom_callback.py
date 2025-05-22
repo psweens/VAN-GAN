@@ -10,6 +10,7 @@ from utils import min_max_norm
 from scipy.ndimage import gaussian_filter
 import scipy.signal
 from typing import Tuple, Optional, Dict, List
+import h5py
 
 
 class GanMonitor:
@@ -552,7 +553,7 @@ class GanMonitor:
                           model.gen_IS, outputFull=True)
 
     def run_mapping(self, model, test_set, sub_img_size=(64, 64, 512, 1), segmentation=True, stride=None,
-                    padFactor=0.25, filetext=None, filepath=''):
+                    filetext=None, filepath=''):
         """
         Runs mapping on a set of test images using the specified generator model and sub-volume size.
 
@@ -571,18 +572,10 @@ class GanMonitor:
 
         """
 
-        # num_cores = int(0.8*(multiprocessing.cpu_count() - 1))
-        # print('Processing training data ...')
-        # Parallel(n_jobs=num_cores, verbose=50)(delayed(
-        #     self.stitch_subvolumes)(gen=model.gen_IS,
-        #                               img=np.load(test_set[imgdir]),
-        #                               subvol_size=sub_img_size,
-        #                               name=filetext+os.path.splitext(os.path.split(os.path.basename(test_set[imgdir]))[1])[0],
-        #                               complete=True) for imgdir in range(len(test_set)))
-
         for imgdir in range(len(test_set)):
             # Extract test array and filename
-            img = np.load(test_set[imgdir])
+            with h5py.File(test_set[imgdir], 'r') as hf:
+                img = hf['image'][:] if segmentation else hf['label'][:]
             filename = os.path.basename(test_set[imgdir])
             filename = os.path.splitext(os.path.split(filename)[1])[0]
             if segmentation:

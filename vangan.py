@@ -42,6 +42,30 @@ class ReplayBuffer:
             # Return the old sample for discriminator training
             return old_fake
 
+def dist_thr_from_voxel_size(voxel_um: float,
+                             min_diam_phys_um: float) -> tf.Tensor:
+    """
+    Compute boundary-collar half-width in *voxels*.
+
+    Parameters
+    ----------
+    voxel_um       : edge length of an isotropic voxel, in millimetres
+    min_diam_phys  : smallest vessel diameter you want to resolve, mm
+                     (user input; e.g. 0.006 mm = 6 µm)
+
+    Returns
+    -------
+    tf.Tensor scalar (float32)  == DIST_THR in voxels
+    """
+    voxel_mm = voxel_um * 1.e-3
+    min_diam_phys = min_diam_phys_um * 1.e-3
+    # convert physical diameter to radius, then to voxels
+    r_min_vox = (min_diam_phys / 2) / voxel_mm
+
+    # choose half that radius as the collar width, but ≥ 1 voxel
+    dist_thr = max(1.0, 0.5 * r_min_vox)
+    print('cbDice distance threshold set to %.2f voxels' % dist_thr)
+    return tf.constant(dist_thr, tf.float32)
 
 class VanGan:
     def __init__(
@@ -97,6 +121,10 @@ class VanGan:
         self.epsilon = 1.e-8
         self.ISI_scale_factor = tf.Variable(1., trainable=False, dtype=tf.float32, name="ISI_scale_factor")
         self.SIS_scale_factor = tf.Variable(1., trainable=False, dtype=tf.float32, name="SIS_scale_factor")
+
+        self.resolution = args.RESOLUTION
+        self.min_vessel_diameter = args.MIN_VESSEL_DIAMETER
+        self.cbdice_dist_thr = dist_thr_from_voxel_size(voxel_um=self.resolution, min_diam_phys_um=self.min_vessel_diameter)
 
         # Create checkpoint directory
         self.checkpoint_dir = os.path.join(args.output_dir, 'checkpoints')
@@ -215,10 +243,10 @@ class VanGan:
         else:
             print('Error: Checkpoint not found!')
 
-    def apply_seg_identity_loss(self, real_S, training, typ=None):
+    def apply_seg_identity_loss(self, real_S, training, typ=None, dist_thr=1.):
         return tf.cond(
             tf.convert_to_tensor(self.identity_off) == tf.constant(False, dtype=tf.bool),
-            lambda: self.identity_loss_fn(self, real_S, self.gen_IS(real_S, training=training), typ=typ),
+            lambda: self.identity_loss_fn(self, real_S, self.gen_IS(real_S, training=training), typ=typ, dist_thr=dist_thr),
             lambda: tf.constant(0.0)
         )
 
@@ -250,11 +278,11 @@ class VanGan:
         cycled_I = self.gen_SI(fake_S, training=training)
         cycle_loss_ISI = self.cycle_loss_fn(self, real_I, cycled_I, typ='mse')
         cycle_loss_SIS = self.cycle_loss_fn(self, real_S, cycled_S, typ="bce")
-        seg_loss = self.seg_loss_fn(self, real_S, cycled_S)
+        seg_loss = self.seg_loss_fn(self, real_S, cycled_S, dist_thr=self.cbdice_dist_thr)
         reconstruction_loss = self.reconstruction_loss(self, real_I, cycled_I)
 
         # Get identity losses
-        seg_identity_loss = self.apply_seg_identity_loss(real_S, training, typ='cldice')
+        seg_identity_loss = self.apply_seg_identity_loss(real_S, training, typ='cldice', dist_thr=self.cbdice_dist_thr)
         imaging_identity_loss = self.apply_imaging_identity_loss(real_I, training)
 
         # Discriminator outputs using replay buffer outputs for fake images
