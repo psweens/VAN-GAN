@@ -81,6 +81,7 @@ def preprocess_hrem(img):
     up = sp.scoreatpercentile(img, 98.)
     img[img > up] = up
     img = gaussian_blur_3d(img)
+    img = min_max_norm(img)
 
     return img
 

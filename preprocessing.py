@@ -227,15 +227,16 @@ class DataPreprocessor:
                 os.path.splitext(file)[0] + ".tiff",
             )
             if self.DIMENSIONS == 3:
+                if stack.ndim == 3: stack = np.newaxis(stack, order="C")
                 sk.imsave(
                     out_png,
-                    (np.transpose(stack, (2, 0, 1)) * 127.5 + 127.5).astype("uint8"),
+                    (np.transpose(stack, (2, 0, 1, 3)) * 255.).astype("uint8"),
                     bigtiff=False,
                     check_contrast=False,
                 )
             else:
                 sk.imsave(
-                    out_png, (stack * 127.5 + 127.5).astype("uint8"),
+                    out_png, (stack * 255.).astype("uint8"),
                     bigtiff=False, check_contrast=False
                 )
 

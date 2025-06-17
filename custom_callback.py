@@ -11,6 +11,7 @@ from scipy.ndimage import gaussian_filter
 import scipy.signal
 from typing import Tuple, Optional, Dict, List
 import h5py
+import tifffile
 
 
 class GanMonitor:
@@ -552,39 +553,84 @@ class GanMonitor:
         self.imagePlotter(epoch, "genSI", self.segmentation_val_data, self.segmentation_val_full_vol_data, model.gen_SI,
                           model.gen_IS, outputFull=True)
 
-    def run_mapping(self, model, test_set, sub_img_size=(64, 64, 512, 1), segmentation=True, stride=None,
-                    filetext=None, filepath=''):
+    def run_mapping(self,
+                    model,
+                    test_set,
+                    sub_img_size=(64, 64, 512, 1),
+                    segmentation=True,
+                    stride=None,
+                    filetext=None,
+                    filepath=''):
         """
         Runs mapping on a set of test images using the specified generator model and sub-volume size.
 
         Args:
-            model (tf.keras.model): The generator model to use for mapping.
+            model (tf.keras.Model): The generator model to use for mapping.
             test_set (List[str]): A list of file paths to the test images.
-            sub_img_size (Tuple[int, int, int, int]): The size of the sub-volumes to use for mapping. Defaults to (64,64,512,1).
-            segmentation (bool): A flag indicating whether to perform segmentation. Defaults to True.
-            stride (Tuple[int, int, int]): The stride to use when mapping sub-volumes. Defaults to (25,25,1).
-            padFactor (float): The padding factor to use when mapping sub-volumes. Defaults to 0.25.
-            filetext (Optional[str]): A string to append to the output file names. Defaults to None.
-            filepath (str): The output file path. Defaults to ''.
+            sub_img_size (Tuple[int, int, int, int]): Size of the sub-volumes to use. Defaults to (64,64,512,1).
+            segmentation (bool): Whether to perform segmentation (uses 'image' dataset) or mapping (uses 'label'). Defaults to True.
+            stride (Tuple[int, int, int]): Stride for mapping sub-volumes. Defaults to None (interpreted inside stitch_subvolumes).
+            filetext (Optional[str]): String to append to output file names. Defaults to None.
+            filepath (str): Directory to save output files. Defaults to ''.
 
         Returns:
             None
-
         """
 
-        for imgdir in range(len(test_set)):
-            # Extract test array and filename
-            with h5py.File(test_set[imgdir], 'r') as hf:
-                img = hf['image'][:] if segmentation else hf['label'][:]
-            filename = os.path.basename(test_set[imgdir])
-            filename = os.path.splitext(os.path.split(filename)[1])[0]
-            if segmentation:
-                print('Segmenting %s ... (%i / %i)' % (filename, imgdir + 1, len(test_set)))
-                # Generate segmentations, stitch and save
-                self.stitch_subvolumes(model.gen_IS, img, sub_img_size, name=filetext + filename,
-                                       complete=True, stride=stride, output_path=filepath)
+        for idx, img_path in enumerate(test_set, 1):
+            # determine file extension
+            _, ext = os.path.splitext(img_path)
+            ext = ext.lower()
+
+            # load image data
+            if ext in ('.h5', '.hdf5'):
+                with h5py.File(img_path, 'r') as hf:
+                    img = hf['image'][:] if segmentation else hf['label'][:]
+            elif ext in ('.tif', '.tiff'):
+                # read the TIFF stack or single plane
+                img = tifffile.imread(img_path)
+
+                # now force into shape (H, W, D, C)
+                if img.ndim == 2:
+                    # single plane → (H, W) → (H, W, 1, 1)
+                    img = img[..., np.newaxis]
+                    img = img[..., np.newaxis]
+
+                elif img.ndim == 3:
+                    # assume (Z, H, W) → reorder to (H, W, Z), then add channel
+                    img = np.transpose(img, (1, 2, 0))
+                    img = img[..., np.newaxis]
             else:
-                print('Mapping %s ... (%i / %i)' % (filename, imgdir + 1, len(test_set)))
-                # Generate segmentations, stitch and save
-                self.stitch_subvolumes(model.gen_SI, img, sub_img_size, name=filetext + filename,
-                                       complete=True, process_img=True, stride=stride, output_path=filepath)
+                raise ValueError(f"Unsupported file extension: {ext}")
+
+            # derive a clean filename base
+            base = os.path.splitext(os.path.basename(img_path))[0]
+            name = (filetext or '') + base
+
+            # progress message
+            mode = 'Segmenting' if segmentation else 'Mapping'
+            print(f"{mode} {base} ... ({idx} / {len(test_set)})")
+
+            # call stitch_subvolumes
+            if segmentation:
+                self.stitch_subvolumes(
+                    model.gen_IS,
+                    img,
+                    sub_img_size,
+                    name=name,
+                    complete=True,
+                    stride=stride,
+                    output_path=filepath
+                )
+            else:
+                self.stitch_subvolumes(
+                    model.gen_SI,
+                    img,
+                    sub_img_size,
+                    name=name,
+                    complete=True,
+                    process_img=True,
+                    stride=stride,
+                    output_path=filepath
+                )
+
