@@ -150,7 +150,8 @@ def ssim_loss(y_true, y_pred, max_val=1.0, filter_size=3, filter_sigma=1.5, k1=0
 
     # Create a 1D Gaussian filter.
     def gaussian_filter(size, sigma):
-        grid = tf.range(-size // 2 + 1, size // 2 + 1, dtype=tf.float32)
+        r = size // 2
+        grid = tf.range(-r, r + 1, dtype=tf.float32)
         gauss = tf.exp(-0.5 * (grid / sigma) ** 2) / (sigma * tf.sqrt(2.0 * np.pi))
         return gauss / tf.reduce_sum(gauss)
 
@@ -213,7 +214,8 @@ def ms_ssim_loss(y_true, y_pred,
 
     # Define a helper to create a 1D Gaussian filter.
     def gaussian_filter(size, sigma):
-        grid = tf.range(-size // 2 + 1, size // 2 + 1, dtype=tf.float32)
+        r = size // 2
+        grid = tf.range(-r, r + 1, dtype=tf.float32)
         # The normalization constants cancel out in SSIM, so we omit them here.
         gauss = tf.exp(-0.5 * (grid / sigma) ** 2)
         return gauss / tf.reduce_sum(gauss)
