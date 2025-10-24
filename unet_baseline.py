@@ -32,7 +32,8 @@ import h5py
 import numpy as np
 import tensorflow as tf
 
-from utils import min_max_norm_tf, rescale_arr_tf
+from cbDice_func import soft_dice_cbdice_loss
+from utils import min_max_norm_tf
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +288,6 @@ def _build_tf_dataset(
         img.set_shape(patch_shape + (1,))
         lbl.set_shape(patch_shape + (1,))
         img = min_max_norm_tf(img, axis=None)
-        img = rescale_arr_tf(img, alpha=-0.5, beta=0.5)
         return img, lbl
 
     dataset = (
@@ -541,7 +541,15 @@ def train_unet(
     with strategy.scope():
         model = build_unet(patch_shape + (1,), base_filters=args.base_filters, depth=args.depth, dropout=args.dropout)
         optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
-        model.compile(optimizer=optimizer, loss=dice_loss, metrics=[dice_coefficient])
+
+        cb_loss_fn = soft_dice_cbdice_loss()
+
+        def loss_with_boundary(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+            return cb_loss_fn(y_true, y_pred, dist_thr=20.0)
+
+        loss_with_boundary.__name__ = "soft_dice_cbdice_loss"
+
+        model.compile(optimizer=optimizer, loss=loss_with_boundary, metrics=[dice_coefficient])
 
     callbacks = []
     best_ckpt_path = Path(args.output_dir) / "unet_best.h5"
@@ -575,7 +583,6 @@ def train_unet(
 def _preprocess_numpy(arr: np.ndarray) -> np.ndarray:
     tensor = tf.convert_to_tensor(arr, dtype=tf.float32)
     tensor = min_max_norm_tf(tensor)
-    tensor = rescale_arr_tf(tensor, alpha=-0.5, beta=0.5)
     return tensor.numpy()
 
 
