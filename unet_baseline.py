@@ -31,9 +31,14 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import h5py
 import numpy as np
 import tensorflow as tf
+from scipy.signal.windows import tukey
 
-from cbDice_func import soft_dice_cbdice_loss
-from utils import min_max_norm_tf
+ds_opts = tf.data.Options()
+ds_opts.experimental_distribute.auto_shard_policy = (
+    tf.data.experimental.AutoShardPolicy.OFF
+)
+
+from utils import min_max_norm_tf, rescale_arr_tf
 
 
 # ---------------------------------------------------------------------------
@@ -61,16 +66,22 @@ def _hann_window(shape: Sequence[int]) -> np.ndarray:
     return kernel[..., np.newaxis]
 
 
-def _tukey_window(shape: Sequence[int], alpha: float = 0.5) -> np.ndarray:
-    if len(shape) != 3:
-        raise ValueError("Tukey window expects a 3-D shape")
-    from scipy.signal import tukey
-
-    windows = [tukey(s, alpha=alpha) for s in shape]
-    kernel = np.outer(windows[0], windows[1]).reshape(shape[0], shape[1], 1)
-    kernel *= windows[2][np.newaxis, np.newaxis, :]
+def _tukey_window(shape, alpha=0.5):
+    """Create a Tukey window for 2D or 3D data."""
+    if len(shape) == 2:
+        w1 = tukey(shape[0], alpha=alpha)
+        w2 = tukey(shape[1], alpha=alpha)
+        kernel = np.outer(w1, w2)
+    elif len(shape) == 3:
+        w1 = tukey(shape[0], alpha=alpha)
+        w2 = tukey(shape[1], alpha=alpha)
+        w3 = tukey(shape[2], alpha=alpha)
+        kernel = np.outer(w1, w2).reshape(shape[0], shape[1], 1) * w3.reshape(1, 1, shape[2])
+    else:
+        raise ValueError("Unsupported shape length: expected 2 or 3 dimensions")
     kernel /= kernel.max()
-    return kernel[..., np.newaxis]
+    kernel = kernel[..., np.newaxis]
+    return kernel
 
 
 def _get_window(window_type: str, shape: Sequence[int], **kwargs) -> np.ndarray:
@@ -288,6 +299,7 @@ def _build_tf_dataset(
         img.set_shape(patch_shape + (1,))
         lbl.set_shape(patch_shape + (1,))
         img = min_max_norm_tf(img, axis=None)
+        #img = rescale_arr_tf(img, alpha=-0.5, beta=0.5)
         return img, lbl
 
     dataset = (
@@ -505,9 +517,10 @@ def dice_coefficient(y_true: tf.Tensor, y_pred: tf.Tensor, epsilon: float = 1e-5
     dice = (2.0 * intersection + epsilon) / (union + epsilon)
     return tf.reduce_mean(dice)
 
-
+from cbDice_func import soft_dice_cbdice_loss
 def dice_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-    return 1.0 - dice_coefficient(y_true, y_pred)
+    obj_func = soft_dice_cbdice_loss()
+    return 1. - obj_func(y_true, y_pred)
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +533,7 @@ def configure_gpus():
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
     if len(gpus) > 1:
-        return tf.distribute.MirroredStrategy()
+        return tf.distribute.OneDeviceStrategy(device="/gpu:0")
     return tf.distribute.get_strategy()
 
 
@@ -541,15 +554,7 @@ def train_unet(
     with strategy.scope():
         model = build_unet(patch_shape + (1,), base_filters=args.base_filters, depth=args.depth, dropout=args.dropout)
         optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
-
-        cb_loss_fn = soft_dice_cbdice_loss()
-
-        def loss_with_boundary(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-            return cb_loss_fn(y_true, y_pred, dist_thr=20.0)
-
-        loss_with_boundary.__name__ = "soft_dice_cbdice_loss"
-
-        model.compile(optimizer=optimizer, loss=loss_with_boundary, metrics=[dice_coefficient])
+        model.compile(optimizer=optimizer, loss=dice_loss, metrics=[dice_coefficient])
 
     callbacks = []
     best_ckpt_path = Path(args.output_dir) / "unet_best.h5"
@@ -583,6 +588,7 @@ def train_unet(
 def _preprocess_numpy(arr: np.ndarray) -> np.ndarray:
     tensor = tf.convert_to_tensor(arr, dtype=tf.float32)
     tensor = min_max_norm_tf(tensor)
+    #tensor = rescale_arr_tf(tensor, alpha=-0.5, beta=0.5)
     return tensor.numpy()
 
 
@@ -659,12 +665,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a supervised 3-D U-Net baseline")
     parser.add_argument(
         "--image-dir",
-        default="./data/bioimage",
+        default="/mnt/sdb/3DcycleGAN_simLNet_LNet/all_data_A",
         help="Directory containing image HDF5 volumes (either flat or with train/val/test sub-folders)",
     )
     parser.add_argument(
         "--label-dir",
-        default="./data/segmentation",
+        default="/mnt/sdb/3DcycleGAN_simLNet_LNet/all_data_B",
         help="Directory containing label HDF5 volumes (either flat or with train/val/test sub-folders)",
     )
     parser.add_argument(
@@ -683,10 +689,10 @@ def parse_args() -> argparse.Namespace:
         help="Sub-folder name for test volumes",
     )
     parser.add_argument("--output-dir", default="./unet_baseline_output", help="Directory to store weights and predictions")
-    parser.add_argument("--patch-size", nargs=3, type=int, default=(128, 128, 128), help="Training patch size (HxWxD)")
-    parser.add_argument("--inference-stride", nargs=3, type=int, default=(64, 64, 64), help="Sliding window stride (HxWxD)")
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--patch-size", nargs=3, type=int, default=(64, 64, 64), help="Training patch size (HxWxD)")
+    parser.add_argument("--inference-stride", nargs=3, type=int, default=(32, 32, 32), help="Sliding window stride (HxWxD)")
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--base-filters", type=int, default=32)
     parser.add_argument("--depth", type=int, default=4)
@@ -745,4 +751,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
