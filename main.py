@@ -2,6 +2,8 @@ import os
 import shutil
 import glob
 import argparse
+from types import SimpleNamespace
+
 import numpy as np
 import tensorflow as tf
 
@@ -30,10 +32,12 @@ from time import time
 from vangan import VanGan, train
 from custom_callback import GanMonitor
 from dataset import DatasetGen
+from paired_dataset import PairedDatasetGen
 from preprocessing import DataPreprocessor
 from preprocess_modality import preprocess_rsom, preprocess_tplsm, preprocess_hrem, preprocess_lsm, \
     preprocess_retinal_image
 from tb_callback import TB_Summary
+from unet_training import train_unet, segment_volumes_with_unet
 from utils import save_args
 from post_training import epoch_sweep
 
@@ -60,8 +64,23 @@ summary = TB_Summary(tensorboardDir, len(physical_devices))  # Initialise Tensor
 print(physical_devices)
 ''' SET PARAMETERS '''
 print('*** Setting VANGAN parameters ***')
-args = argparse.ArgumentParser()
+cli_parser = argparse.ArgumentParser(description='Training entry point')
+cli_parser.add_argument('--architecture', choices=['vangan', 'unet'], default='vangan',
+                        help='Select which architecture to train (unsupervised VAN-GAN or supervised 3D U-Net).')
+cli_parser.add_argument('--unet_infer_dir', default=None,
+                        help='Optional path to a directory or HDF5 file to segment after U-Net training. '
+                             'Defaults to the imaging testing partition if not provided.')
+cli_parser.add_argument('--unet_infer_stride', type=int, nargs='*', default=None,
+                        help='Sliding-window stride for U-Net inference. Provide one value or one per spatial '
+                             'dimension. Defaults to the training patch size when omitted.')
+cli_parser.add_argument('--unet_threshold', type=float, default=0.5,
+                        help='Probability threshold applied to the U-Net output when generating binary masks.')
+cli_args = cli_parser.parse_args()
+
+args = SimpleNamespace()
+args.ARCHITECTURE = cli_args.architecture
 args.output_dir = '/mnt/sda/VG_Output'
+os.makedirs(args.output_dir, exist_ok=True)
 args.N_DEVICES = len(physical_devices)
 args.BUFFER_SIZE = 256
 args.MIN_PIXEL_VALUE = -1.0
@@ -85,6 +104,19 @@ args.TARG_RAW_IMG_SIZE = (600, 600, 140, args.CHANNELS)  # Target size if downsa
 args.SYNTH_IMG_SIZE = (512, 512, 140)  # Unprocessed segmentation domain image dimensions
 args.TARG_SYNTH_IMG_SIZE = (512, 512, 140)  # Target size if downsampling
 args.SUBVOL_PATCH_SIZE = (128, 128, 128)  # Size of subvolume to be trained on
+# Optional inference overrides for supervised U-Net runs
+if cli_args.unet_infer_stride:
+    stride_values = [int(val) for val in cli_args.unet_infer_stride]
+    if len(stride_values) == 1:
+        args.UNET_INFER_STRIDE = tuple([stride_values[0]] * args.DIMENSIONS)
+    elif len(stride_values) == args.DIMENSIONS:
+        args.UNET_INFER_STRIDE = tuple(stride_values)
+    else:
+        raise ValueError('`--unet_infer_stride` expects either one value or one value per spatial dimension.')
+else:
+    args.UNET_INFER_STRIDE = None
+args.UNET_INFER_PATH = cli_args.unet_infer_dir
+args.UNET_INFER_THRESHOLD = float(cli_args.unet_threshold)
 # Set model input image size for training (based on above)
 if args.DIMENSIONS == 2:
     args.INPUT_IMG_SIZE = (
@@ -195,23 +227,107 @@ def process_imaging_otf(tensor, axis=None, keepdims=True):
 # process_imaging_otf = None
 
 # Define dataset class
-getDataset = DatasetGen(args=args,
-                        imaging_paths=imaging_data.partition,
-                        segmentation_paths=synth_data.partition,
-                        strategy=strategy,
-                        otf_imaging=process_imaging_otf,  # Set to None if OTF processing not needed
-                        surface_illumination=args.SURFACE_ILLUMINATION
-                        # semi_supervised_dir='/mnt/sda/3DcycleGAN_simLNet_LNet/all_A_data'
-                        )
+if args.ARCHITECTURE == 'unet':
+    paired_dataset = PairedDatasetGen(
+        args=args,
+        imaging_paths=imaging_data.partition,
+        segmentation_paths=synth_data.partition,
+        strategy=strategy,
+        otf_imaging=process_imaging_otf,
+    )
+else:
+    getDataset = DatasetGen(args=args,
+                            imaging_paths=imaging_data.partition,
+                            segmentation_paths=synth_data.partition,
+                            strategy=strategy,
+                            otf_imaging=process_imaging_otf,  # Set to None if OTF processing not needed
+                            surface_illumination=args.SURFACE_ILLUMINATION
+                            # semi_supervised_dir='/mnt/sda/3DcycleGAN_simLNet_LNet/all_A_data'
+                            )
 
 ''' CALCULATE NUMBER OF TRAINING / VALIDATION STEPS '''
-args.train_steps = int(np.amax([len(imaging_data.partition['training']),
-                                len(synth_data.partition['training'])]) / args.GLOBAL_BATCH_SIZE)
+if args.ARCHITECTURE == 'unet':
+    args.train_steps = paired_dataset.train_steps
+    args.val_steps = paired_dataset.val_steps
+else:
+    args.train_steps = int(np.amax([len(imaging_data.partition['training']),
+                                    len(synth_data.partition['training'])]) / args.GLOBAL_BATCH_SIZE)
 
-args.val_steps = int(np.round(np.amax([len(imaging_data.partition['validation']),
-                                       len(synth_data.partition['validation'])]) / args.GLOBAL_BATCH_SIZE))
-if args.val_steps < 1.:
-    args.val_steps = int(1)
+    args.val_steps = int(np.round(np.amax([len(imaging_data.partition['validation']),
+                                           len(synth_data.partition['validation'])]) / args.GLOBAL_BATCH_SIZE))
+    if args.val_steps < 1.:
+        args.val_steps = int(1)
+
+if args.ARCHITECTURE == 'unet':
+    print('*** Training supervised 3D U-Net ***')
+    save_args(args, os.path.join(args.output_dir, 'Args_Settings.txt'))
+    unet_result = train_unet(args, strategy, paired_dataset)
+
+    def _resolve_inference_targets(path_hint, default_list):
+        if path_hint:
+            if os.path.isdir(path_hint):
+                entries = [
+                    os.path.join(path_hint, entry)
+                    for entry in sorted(os.listdir(path_hint))
+                    if entry.lower().endswith(('.h5', '.hdf5'))
+                ]
+                return [p for p in entries if os.path.exists(p)]
+            if os.path.isfile(path_hint):
+                return [path_hint]
+            print(f'Warning: `--unet_infer_dir` path not found: {path_hint}')
+            return []
+        if not default_list:
+            return []
+        valid_defaults = [p for p in default_list if os.path.exists(p)]
+        missing = set(default_list) - set(valid_defaults)
+        for missing_path in sorted(missing):
+            print(f'Warning: testing partition file not found for inference: {missing_path}')
+        return valid_defaults
+
+    inference_targets = _resolve_inference_targets(
+        args.UNET_INFER_PATH,
+        imaging_data.partition.get('testing'),
+    )
+
+    if not inference_targets:
+        print('No volumes were provided for U-Net inference; skipping post-training segmentation step.')
+        raise SystemExit
+
+    label_map = None
+    if args.UNET_INFER_PATH is None:
+        testing_segmentations = synth_data.partition.get('testing')
+        if testing_segmentations:
+            seg_lookup = {
+                os.path.splitext(os.path.basename(seg_path))[0]: seg_path
+                for seg_path in testing_segmentations
+            }
+            label_map = {}
+            for img_path in inference_targets:
+                base = os.path.splitext(os.path.basename(img_path))[0]
+                match = seg_lookup.get(base)
+                if match:
+                    label_map[base] = match
+            if not label_map:
+                label_map = None
+
+    prediction_dir = os.path.join(args.output_dir, 'unet_predictions')
+    inference_results = segment_volumes_with_unet(
+        args,
+        unet_result.model,
+        inference_targets,
+        prediction_dir,
+        stride=args.UNET_INFER_STRIDE,
+        threshold=args.UNET_INFER_THRESHOLD,
+        label_map=label_map,
+    )
+
+    print(f"Best U-Net checkpoint saved to: {unet_result.best_checkpoint}")
+    for source_path, info in inference_results.items():
+        dice_info = ''
+        if info.get('dice') is not None:
+            dice_info = f", Dice={info['dice']:.4f}"
+        print(f"Segmented {source_path} -> {info['prediction_path']}{dice_info}")
+    raise SystemExit
 
 ''' DEFINE VANGAN '''
 vangan_model = VanGan(args, strategy=strategy, semi_supervised=False)
