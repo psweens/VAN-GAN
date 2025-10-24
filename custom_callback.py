@@ -139,6 +139,8 @@ class GanMonitor:
             window_type: str = 'tukey',
             window_params: Optional[Dict] = None,
             batch_size: int = 16,
+            save_output: bool = True,
+            return_prediction: bool = False,
     ):
         """Stitch together sub‑volumes to create a full‑volume prediction using an
         arbitrary apodisation window **with batched inference**.
@@ -166,6 +168,11 @@ class GanMonitor:
             Extra kwargs for the chosen window.
         batch_size : int, default = 8
             Maximum number of patches processed in one forward pass.
+        save_output : bool, default = True
+            When ``True`` the stitched prediction is written to ``output_path`` as a TIFF.
+        return_prediction : bool, default = False
+            When ``True`` the stitched prediction array is returned (before any
+            normalisation or casting).
         """
 
         # ---------------------------------------------------------------------
@@ -173,6 +180,9 @@ class GanMonitor:
         # ---------------------------------------------------------------------
         if window_params is None:
             window_params = {}
+
+        if save_output and not output_path:
+            raise ValueError("`output_path` must be provided when `save_output` is True.")
 
         if stride is None:
             stride = [max(1, x // 2) for x in subvol_size[1:4]]
@@ -333,18 +343,24 @@ class GanMonitor:
         # ------------------------------------------------------------------
         # 9. Normalise to 0‑255 and save TIFF -------------------------------------
         # ------------------------------------------------------------------
-        pred = 255 * min_max_norm(pred)
-        pred = pred.astype(np.uint8)
+        raw_prediction = pred.copy()
 
-        if self.dims == 2:
-            io.imsave(os.path.join(output_path, f"{name}.tiff"), np.squeeze(pred))
-        else:
-            io.imsave(
-                os.path.join(output_path, f"{name}.tiff"),
-                np.transpose(pred, (2, 0, 1, 3)),  # (depth, H, W, C)
-                bigtiff=True,
-                check_contrast=False,
-            )
+        if save_output:
+            pred = 255 * min_max_norm(pred)
+            pred = pred.astype(np.uint8)
+
+            if self.dims == 2:
+                io.imsave(os.path.join(output_path, f"{name}.tiff"), np.squeeze(pred))
+            else:
+                io.imsave(
+                    os.path.join(output_path, f"{name}.tiff"),
+                    np.transpose(pred, (2, 0, 1, 3)),  # (depth, H, W, C)
+                    bigtiff=True,
+                    check_contrast=False,
+                )
+
+        if return_prediction:
+            return raw_prediction
 
     def imagePlotter(self, epoch, filename, setlist, dataset, genX, genY, nfig=6, outputFull=True, process_img=False):
         """
