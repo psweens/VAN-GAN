@@ -4,11 +4,13 @@ This script mirrors the data ingestion and sliding-window inference
 pipeline used by VAN-GAN so that a supervised 3-D U-Net can be trained and
 evaluated on the same paired datasets.  It expects HDF5 volumes with
 `image` and `label` datasets (identical to the GAN pipeline) stored in
-separate folders for the imaging and segmentation domains.  The script
-automatically discovers train/val/test splits from sub-folders beneath the
-provided bioimage and segmentation roots and reuses the best validation
-checkpoint for sliding-window inference across the original bioimage
-directory.
+separate folders for the imaging and segmentation domains.  The script can
+either ingest explicit ``train``/``val``/``test`` sub-directories or, more
+commonly, consume flat directories of HDF5 volumes and automatically split
+them into train/validation/test partitions (ensuring paired filenames
+between the imaging and segmentation folders).  After training, the best
+validation checkpoint is reused for sliding-window inference across every
+split and over the original bioimage directories.
 
 Example
 -------
@@ -307,20 +309,126 @@ def _validate_pairs(image_paths: Sequence[Path], label_paths: Sequence[Path], sp
             raise ValueError(f"Mismatched {split} pair: {img.name} vs {lbl.name}")
 
 
+def _match_paired_roots(image_root: Path, label_root: Path) -> List[Tuple[Path, Path]]:
+    image_files = _list_h5_files(image_root)
+    label_files = _list_h5_files(label_root)
+
+    labels_by_stem = {p.stem: p for p in label_files}
+    pairs: List[Tuple[Path, Path]] = []
+    missing_labels: List[str] = []
+
+    for img_path in image_files:
+        lbl_path = labels_by_stem.get(img_path.stem)
+        if lbl_path is None:
+            missing_labels.append(img_path.name)
+        else:
+            pairs.append((img_path, lbl_path))
+
+    if missing_labels:
+        raise ValueError(
+            "Missing matching label files for: " + ", ".join(sorted(missing_labels))
+        )
+
+    extra_labels = sorted(set(labels_by_stem) - {img.stem for img, _ in pairs})
+    if extra_labels:
+        raise ValueError(
+            "Label files without corresponding images: " + ", ".join(extra_labels)
+        )
+
+    return pairs
+
+
+def _fractional_split(
+    pairs: Sequence[Tuple[Path, Path]],
+    split_names: Sequence[str],
+    val_fraction: float,
+    test_fraction: float,
+    seed: int,
+) -> Dict[str, SplitPaths]:
+    if len(split_names) != 3:
+        raise ValueError("Expected exactly three split names (train/val/test)")
+    if val_fraction < 0 or test_fraction < 0:
+        raise ValueError("Validation and test fractions must be non-negative")
+    if val_fraction + test_fraction >= 1.0:
+        raise ValueError("Validation and test fractions must sum to less than 1")
+
+    total = len(pairs)
+    if total == 0:
+        raise ValueError("No paired HDF5 volumes found for splitting")
+
+    rng = np.random.default_rng(seed)
+    indices = np.arange(total)
+    rng.shuffle(indices)
+
+    val_count = int(np.floor(total * val_fraction))
+    test_count = int(np.floor(total * test_fraction))
+    train_count = total - val_count - test_count
+
+    # Guarantee at least one sample per split when possible.
+    if train_count <= 0:
+        train_count = 1
+        if val_count > test_count:
+            val_count = max(0, val_count - 1)
+        else:
+            test_count = max(0, test_count - 1)
+    if val_fraction > 0 and val_count == 0 and total >= 2:
+        val_count = 1
+        train_count = max(1, train_count - 1)
+    if test_fraction > 0 and test_count == 0 and total - val_count >= 2:
+        test_count = 1
+        train_count = max(1, train_count - 1)
+
+    if val_fraction > 0 and val_count == 0:
+        raise ValueError(
+            "Validation split is empty; increase dataset size or adjust --val-fraction"
+        )
+    if test_fraction > 0 and test_count == 0:
+        raise ValueError(
+            "Test split is empty; increase dataset size or adjust --test-fraction"
+        )
+
+    train_idx = indices[:train_count]
+    val_idx = indices[train_count : train_count + val_count]
+    test_idx = indices[train_count + val_count : train_count + val_count + test_count]
+
+    split_map: Dict[str, SplitPaths] = {}
+    split_indices = {
+        split_names[0]: train_idx,
+        split_names[1]: val_idx,
+        split_names[2]: test_idx,
+    }
+
+    for split_name, split_idx in split_indices.items():
+        images = [pairs[i][0] for i in split_idx]
+        labels = [pairs[i][1] for i in split_idx]
+        split_map[split_name] = SplitPaths(images=images, labels=labels)
+
+    return split_map
+
+
 def discover_split_paths(
     image_root: Path,
     label_root: Path,
     split_names: Sequence[str],
+    *,
+    val_fraction: float,
+    test_fraction: float,
+    split_seed: int,
 ) -> Dict[str, SplitPaths]:
-    split_map: Dict[str, SplitPaths] = {}
-    for split in split_names:
-        img_dir = image_root / split
-        lbl_dir = label_root / split
-        images = _list_h5_files(img_dir)
-        labels = _list_h5_files(lbl_dir)
-        _validate_pairs(images, labels, split)
-        split_map[split] = SplitPaths(images=images, labels=labels)
-    return split_map
+    subdirs_exist = all((image_root / split).exists() and (label_root / split).exists() for split in split_names)
+    if subdirs_exist:
+        split_map: Dict[str, SplitPaths] = {}
+        for split in split_names:
+            img_dir = image_root / split
+            lbl_dir = label_root / split
+            images = _list_h5_files(img_dir)
+            labels = _list_h5_files(lbl_dir)
+            _validate_pairs(images, labels, split)
+            split_map[split] = SplitPaths(images=images, labels=labels)
+        return split_map
+
+    pairs = _match_paired_roots(image_root, label_root)
+    return _fractional_split(pairs, split_names, val_fraction, test_fraction, split_seed)
 
 
 def prepare_datasets(
@@ -545,12 +653,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-dir",
         default="./data/bioimage",
-        help="Root directory containing train/val/test sub-folders with image HDF5 volumes",
+        help="Directory containing image HDF5 volumes (either flat or with train/val/test sub-folders)",
     )
     parser.add_argument(
         "--label-dir",
         default="./data/segmentation",
-        help="Root directory containing train/val/test sub-folders with label HDF5 volumes",
+        help="Directory containing label HDF5 volumes (either flat or with train/val/test sub-folders)",
     )
     parser.add_argument(
         "--train-split",
@@ -581,6 +689,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-kwargs", default="", help="JSON encoded keyword arguments for the window function")
     parser.add_argument("--threshold", type=float, default=0.5, help="Binarisation threshold for predictions")
     parser.add_argument("--save-predictions", action="store_true", help="Persist predicted masks as HDF5 volumes")
+    parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of volumes reserved for validation when splitting flat directories")
+    parser.add_argument("--test-fraction", type=float, default=0.1, help="Fraction of volumes reserved for testing when splitting flat directories")
+    parser.add_argument("--split-seed", type=int, default=1337, help="Random seed for automatic train/val/test partitioning")
     return parser.parse_args()
 
 
@@ -590,7 +701,14 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     split_names = (args.train_split, args.val_split, args.test_split)
-    split_map = discover_split_paths(Path(args.image_dir), Path(args.label_dir), split_names)
+    split_map = discover_split_paths(
+        Path(args.image_dir),
+        Path(args.label_dir),
+        split_names,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
+        split_seed=args.split_seed,
+    )
 
     patch_shape = tuple(args.patch_size)
     model = train_unet(args, split_map, patch_shape)
