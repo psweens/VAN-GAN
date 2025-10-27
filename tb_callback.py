@@ -30,6 +30,9 @@ class TB_Summary:
             with self.validate_summary_writer.as_default():
                 tf.summary.scalar(tag, value, step=epoch)
 
+    def get_writer(self, training: bool):
+        return self.train_summary_writer if training else self.validate_summary_writer
+
     def losses(self, results):
         for key, value in results.items():
             if key in ["binariness_fake_S", "clip_upper_prop", "clip_lower_prop", "dynamic_clip_val",

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -39,6 +40,7 @@ ds_opts.experimental_distribute.auto_shard_policy = (
 )
 
 from utils import min_max_norm_tf, rescale_arr_tf
+from tb_callback import TB_Summary
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +280,31 @@ class PairedDataset:
 class SplitPaths:
     images: List[Path]
     labels: List[Path]
+
+
+def _prepare_monitor_samples(split: SplitPaths, max_samples: int) -> List[dict]:
+    samples: List[dict] = []
+    if max_samples <= 0:
+        return samples
+
+    for img_path, lbl_path in islice(zip(split.images, split.labels), max_samples):
+        image = _load_full_volume(img_path, "image")
+        label = _load_full_volume(lbl_path, "label")
+
+        if image.ndim == 3:
+            image = image[..., np.newaxis]
+        if label.ndim == 3:
+            label = label[..., np.newaxis]
+
+        samples.append(
+            {
+                "name": img_path.stem,
+                "image": image.astype(np.float32),
+                "label": label.astype(np.float32),
+            }
+        )
+
+    return samples
 
 
 def _build_tf_dataset(
@@ -528,6 +555,144 @@ def dice_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
 # ---------------------------------------------------------------------------
 
 
+class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
+    """Mirror VAN-GAN's intra-training monitoring for the U-Net baseline."""
+
+    def __init__(
+        self,
+        summary: TB_Summary,
+        samples: List[dict],
+        patch_shape: Sequence[int],
+        stride: Sequence[int],
+        *,
+        period: int = 1,
+        threshold: float = 0.5,
+        window_type: str = "tukey",
+        window_kwargs: Optional[dict] = None,
+        preprocess: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        inference_batch_size: int = 4,
+    ) -> None:
+        super().__init__()
+        self.summary = summary
+        self.samples = samples
+        self.patch_shape = tuple(patch_shape)
+        self.stride = tuple(stride)
+        self.period = max(1, int(period))
+        self.threshold = threshold
+        self.window_type = window_type
+        self.window_kwargs = window_kwargs or {}
+        self.preprocess = preprocess
+        self.inference_batch_size = inference_batch_size
+
+    @staticmethod
+    def _normalise(arr: np.ndarray) -> np.ndarray:
+        arr = arr.astype(np.float32)
+        if arr.size == 0:
+            return arr
+        min_val = arr.min()
+        max_val = arr.max()
+        if max_val > min_val:
+            arr = (arr - min_val) / (max_val - min_val)
+        else:
+            arr = np.zeros_like(arr, dtype=np.float32)
+        return arr
+
+    def _render_panel(self, volume: np.ndarray, label: np.ndarray, prediction: np.ndarray) -> np.ndarray:
+        if volume.ndim == 4:
+            depth = volume.shape[2]
+            slice_idx = max(0, depth // 2)
+            image_slice = volume[:, :, slice_idx, 0]
+        else:
+            image_slice = volume.squeeze()
+            slice_idx = 0
+
+        if label.ndim == 4:
+            label_slice = label[:, :, min(slice_idx, label.shape[2] - 1), 0]
+        else:
+            label_slice = label.squeeze()
+
+        if prediction.ndim == 4:
+            pred_slice = prediction[:, :, min(slice_idx, prediction.shape[2] - 1), 0]
+        elif prediction.ndim == 3:
+            pred_slice = prediction[:, :, min(slice_idx, prediction.shape[2] - 1)]
+        else:
+            pred_slice = prediction.squeeze()
+
+        panel = np.concatenate(
+            [
+                self._normalise(image_slice),
+                self._normalise(label_slice),
+                self._normalise(pred_slice),
+            ],
+            axis=1,
+        )
+        return panel.astype(np.float32)[np.newaxis, ..., np.newaxis]
+
+    @staticmethod
+    def _dice_score(pred: np.ndarray, target: np.ndarray, eps: float = 1e-5) -> float:
+        pred_bin = (pred >= 0.5).astype(np.float32)
+        target = target.astype(np.float32)
+        intersection = np.sum(pred_bin * target)
+        denom = np.sum(pred_bin) + np.sum(target)
+        return float((2.0 * intersection + eps) / (denom + eps))
+
+    def _log_scalar(self, logs: Dict[str, float], key: str, tag: str, step: int, training: bool) -> None:
+        if self.summary is None:
+            return
+        value = logs.get(key)
+        if value is None:
+            return
+        self.summary.scalar(tag, float(value), epoch=step, training=training)
+
+    def on_epoch_end(self, epoch, logs=None):  # type: ignore[override]
+        logs = logs or {}
+        step = epoch + 1
+
+        self._log_scalar(logs, "loss", "loss", step, training=True)
+        self._log_scalar(logs, "dice_coefficient", "dice_coefficient", step, training=True)
+        self._log_scalar(logs, "val_loss", "loss", step, training=False)
+        self._log_scalar(logs, "val_dice_coefficient", "dice_coefficient", step, training=False)
+
+        if not self.samples or (step % self.period != 0):
+            super().on_epoch_end(epoch, logs)
+            return
+
+        dice_scores: List[float] = []
+        for sample in self.samples:
+            volume = sample["image"]
+            label = sample["label"]
+            prediction = sliding_window_inference(
+                volume,
+                self.model,
+                self.patch_shape,
+                self.stride,
+                batch_size=self.inference_batch_size,
+                window_type=self.window_type,
+                window_kwargs=self.window_kwargs,
+                preprocess=self.preprocess,
+            )
+
+            if prediction.ndim == 4 and prediction.shape[-1] == 1:
+                pred_prob = np.clip(prediction[..., 0], 0.0, 1.0)
+            else:
+                pred_prob = np.clip(prediction, 0.0, 1.0)
+
+            lbl = label[..., 0] if label.ndim == 4 else label
+            lbl = np.clip(lbl, 0.0, 1.0)
+            dice_scores.append(
+                self._dice_score((pred_prob >= self.threshold).astype(np.float32), lbl)
+            )
+
+            if self.summary is not None:
+                panel = self._render_panel(volume, label, pred_prob[..., np.newaxis])
+                self.summary.image(f"monitor/{sample['name']}", panel, step=step, training=False)
+
+        if dice_scores and self.summary is not None:
+            self.summary.scalar("monitor_dice", float(np.mean(dice_scores)), epoch=step, training=False)
+
+        super().on_epoch_end(epoch, logs)
+
+
 def configure_gpus():
     gpus = tf.config.list_physical_devices("GPU")
     for gpu in gpus:
@@ -551,12 +716,33 @@ def train_unet(
         args.batch_size,
     )
 
+    tb_dir = Path(args.output_dir) / "TB_Logs"
+    tb_dir.mkdir(parents=True, exist_ok=True)
+    n_devices = max(1, len(tf.config.list_physical_devices("GPU")))
+    summary = TB_Summary(str(tb_dir), n_devices)
+    window_kwargs = json.loads(args.window_kwargs) if args.window_kwargs else None
+    monitor_samples = _prepare_monitor_samples(split_map[args.val_split], args.monitor_samples)
+
     with strategy.scope():
         model = build_unet(patch_shape + (1,), base_filters=args.base_filters, depth=args.depth, dropout=args.dropout)
         optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
         model.compile(optimizer=optimizer, loss=dice_loss, metrics=[dice_coefficient])
 
-    callbacks = []
+    callbacks: List[tf.keras.callbacks.Callback] = []
+    callbacks.append(
+        IntraEpochPerformanceMonitor(
+            summary=summary,
+            samples=monitor_samples,
+            patch_shape=patch_shape,
+            stride=tuple(args.inference_stride),
+            period=args.monitor_period,
+            threshold=args.threshold,
+            window_type=args.window_type,
+            window_kwargs=window_kwargs,
+            preprocess=_preprocess_numpy,
+            inference_batch_size=args.inference_batch_size,
+        )
+    )
     best_ckpt_path = Path(args.output_dir) / "unet_best.h5"
     callbacks.append(tf.keras.callbacks.ModelCheckpoint(
         filepath=str(best_ckpt_path),
@@ -697,6 +883,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-filters", type=int, default=32)
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument(
+        "--monitor-period",
+        type=int,
+        default=1,
+        help="Number of epochs between intra-training visual summaries",
+    )
+    parser.add_argument(
+        "--monitor-samples",
+        type=int,
+        default=2,
+        help="Validation volumes visualised by the intra-training monitor",
+    )
     parser.add_argument("--inference-batch-size", type=int, default=4, help="Number of patches evaluated at once during inference")
     parser.add_argument("--window-type", choices=["tukey", "hann", "gaussian"], default="tukey")
     parser.add_argument("--window-kwargs", default="", help="JSON encoded keyword arguments for the window function")
