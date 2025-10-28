@@ -30,6 +30,10 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import h5py
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -41,7 +45,6 @@ ds_opts.experimental_distribute.auto_shard_policy = (
 )
 
 from utils import min_max_norm_tf, rescale_arr_tf
-from tb_callback import TB_Summary
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +270,19 @@ def _load_full_volume(path: Path, dataset: str) -> np.ndarray:
     with h5py.File(path, "r") as f:
         data = f[dataset][...].astype(np.float32)
     return data
+
+
+def _normalise_array(arr: np.ndarray) -> np.ndarray:
+    arr = arr.astype(np.float32)
+    if arr.size == 0:
+        return arr
+    min_val = float(arr.min())
+    max_val = float(arr.max())
+    if max_val > min_val:
+        arr = (arr - min_val) / (max_val - min_val)
+    else:
+        arr = np.zeros_like(arr, dtype=np.float32)
+    return arr
 
 
 @dataclass
@@ -561,11 +577,11 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
 
     def __init__(
         self,
-        summary: TB_Summary,
+        *,
+        output_dir: Path,
         samples: List[dict],
         patch_shape: Sequence[int],
         stride: Sequence[int],
-        *,
         period: int = 1,
         threshold: float = 0.5,
         window_type: str = "tukey",
@@ -574,7 +590,8 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
         inference_batch_size: int = 4,
     ) -> None:
         super().__init__()
-        self.summary = summary
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.samples = samples
         self.patch_shape = tuple(patch_shape)
         self.stride = tuple(stride)
@@ -585,20 +602,12 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
         self.preprocess = preprocess
         self.inference_batch_size = inference_batch_size
 
-    @staticmethod
-    def _normalise(arr: np.ndarray) -> np.ndarray:
-        arr = arr.astype(np.float32)
-        if arr.size == 0:
-            return arr
-        min_val = arr.min()
-        max_val = arr.max()
-        if max_val > min_val:
-            arr = (arr - min_val) / (max_val - min_val)
-        else:
-            arr = np.zeros_like(arr, dtype=np.float32)
-        return arr
-
-    def _render_panel(self, volume: np.ndarray, label: np.ndarray, prediction: np.ndarray) -> np.ndarray:
+    def _extract_slices(
+        self,
+        volume: np.ndarray,
+        label: np.ndarray,
+        prediction: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if volume.ndim == 4:
             depth = volume.shape[2]
             slice_idx = max(0, depth // 2)
@@ -619,15 +628,32 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
         else:
             pred_slice = prediction.squeeze()
 
-        panel = np.concatenate(
-            [
-                self._normalise(image_slice),
-                self._normalise(label_slice),
-                self._normalise(pred_slice),
-            ],
-            axis=1,
-        )
-        return panel.astype(np.float32)[np.newaxis, ..., np.newaxis]
+        return image_slice, label_slice, pred_slice
+
+    def _plot_sample(
+        self,
+        sample_name: str,
+        epoch_step: int,
+        volume: np.ndarray,
+        label: np.ndarray,
+        prediction: np.ndarray,
+    ) -> None:
+        image_slice, label_slice, pred_slice = self._extract_slices(volume, label, prediction)
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        axes[0].imshow(_normalise_array(image_slice), cmap="gray")
+        axes[0].set_title("Input")
+        axes[1].imshow(_normalise_array(label_slice), cmap="gray")
+        axes[1].set_title("Label")
+        axes[2].imshow(_normalise_array(pred_slice), cmap="gray")
+        axes[2].set_title("Prediction")
+        for ax in axes:
+            ax.axis("off")
+        fig.suptitle(f"Epoch {epoch_step}: {sample_name}")
+        fig.tight_layout()
+        figure_path = self.output_dir / f"{sample_name}_epoch_{epoch_step:03d}.png"
+        fig.savefig(figure_path)
+        print(f"[Monitor] Saved {figure_path}")
+        plt.close(fig)
 
     @staticmethod
     def _dice_score(pred: np.ndarray, target: np.ndarray, eps: float = 1e-5) -> float:
@@ -637,22 +663,9 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
         denom = np.sum(pred_bin) + np.sum(target)
         return float((2.0 * intersection + eps) / (denom + eps))
 
-    def _log_scalar(self, logs: Dict[str, float], key: str, tag: str, step: int, training: bool) -> None:
-        if self.summary is None:
-            return
-        value = logs.get(key)
-        if value is None:
-            return
-        self.summary.scalar(tag, float(value), epoch=step, training=training)
-
     def on_epoch_end(self, epoch, logs=None):  # type: ignore[override]
         logs = logs or {}
         step = epoch + 1
-
-        self._log_scalar(logs, "loss", "loss", step, training=True)
-        self._log_scalar(logs, "dice_coefficient", "dice_coefficient", step, training=True)
-        self._log_scalar(logs, "val_loss", "loss", step, training=False)
-        self._log_scalar(logs, "val_dice_coefficient", "dice_coefficient", step, training=False)
 
         if not self.samples or (step % self.period != 0):
             super().on_epoch_end(epoch, logs)
@@ -680,18 +693,70 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
 
             lbl = label[..., 0] if label.ndim == 4 else label
             lbl = np.clip(lbl, 0.0, 1.0)
-            dice_scores.append(
-                self._dice_score((pred_prob >= self.threshold).astype(np.float32), lbl)
-            )
+            dice = self._dice_score((pred_prob >= self.threshold).astype(np.float32), lbl)
+            dice_scores.append(dice)
+            self._plot_sample(sample["name"], step, volume, label, pred_prob)
 
-            if self.summary is not None:
-                panel = self._render_panel(volume, label, pred_prob[..., np.newaxis])
-                self.summary.image(f"monitor/{sample['name']}", panel, step=step, training=False)
-
-        if dice_scores and self.summary is not None:
-            self.summary.scalar("monitor_dice", float(np.mean(dice_scores)), epoch=step, training=False)
+        if dice_scores:
+            mean_dice = float(np.mean(dice_scores))
+            logs["monitor_dice"] = mean_dice
+            print(f"[Monitor] Epoch {step}: mean Dice = {mean_dice:.4f}")
 
         super().on_epoch_end(epoch, logs)
+
+
+def _plot_training_sample(
+    train_dataset: tf.data.Dataset,
+    output_dir: Path,
+) -> None:
+    """Visualise a representative training sample alongside its mask."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        batch = next(iter(train_dataset.take(1)))
+    except StopIteration:
+        return
+
+    images, labels = batch
+    images = images.numpy() if hasattr(images, "numpy") else np.asarray(images)
+    labels = labels.numpy() if hasattr(labels, "numpy") else np.asarray(labels)
+
+    if images.shape[0] == 0:
+        return
+
+    image = images[0]
+    label = labels[0]
+
+    if image.ndim == 4:  # (H, W, D, C)
+        depth = image.shape[2]
+        n_slices = max(1, min(3, depth))
+        slice_indices = np.linspace(0, depth - 1, num=n_slices, dtype=int)
+        fig, axes = plt.subplots(n_slices, 2, figsize=(8, 4 * n_slices))
+        if n_slices == 1:
+            axes = np.expand_dims(axes, axis=0)
+        for row, idx in enumerate(slice_indices):
+            axes[row, 0].imshow(_normalise_array(image[:, :, idx, 0]), cmap="gray")
+            axes[row, 0].set_title(f"Image (z={idx})")
+            axes[row, 1].imshow(_normalise_array(label[:, :, min(idx, label.shape[2] - 1), 0]), cmap="gray")
+            axes[row, 1].set_title(f"Mask (z={idx})")
+            axes[row, 0].axis("off")
+            axes[row, 1].axis("off")
+    else:  # (H, W, C)
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        axes[0].imshow(_normalise_array(image[:, :, 0]), cmap="gray")
+        axes[0].set_title("Image")
+        axes[1].imshow(_normalise_array(label[:, :, 0]), cmap="gray")
+        axes[1].set_title("Mask")
+        for ax in axes:
+            ax.axis("off")
+
+    fig.suptitle("Training sample (image vs. mask)")
+    fig.tight_layout()
+    figure_path = output_dir / "training_sample.png"
+    fig.savefig(figure_path)
+    print(f"[Monitor] Saved training sample visualisation to {figure_path}")
+    plt.close(fig)
 
 
 def configure_gpus():
@@ -717,10 +782,9 @@ def train_unet(
         args.batch_size,
     )
 
-    tb_dir = Path(args.output_dir) / "TB_Logs"
-    tb_dir.mkdir(parents=True, exist_ok=True)
-    n_devices = max(1, len(tf.config.list_physical_devices("GPU")))
-    summary = TB_Summary(str(tb_dir), n_devices)
+    monitor_dir = Path(args.output_dir) / "monitor_figures"
+    monitor_dir.mkdir(parents=True, exist_ok=True)
+    _plot_training_sample(dataset.train_dataset, monitor_dir)
     window_kwargs = json.loads(args.window_kwargs) if args.window_kwargs else None
     monitor_samples = _prepare_monitor_samples(split_map[args.val_split], args.monitor_samples)
 
@@ -732,7 +796,7 @@ def train_unet(
     callbacks: List[tf.keras.callbacks.Callback] = []
     callbacks.append(
         IntraEpochPerformanceMonitor(
-            summary=summary,
+            output_dir=monitor_dir,
             samples=monitor_samples,
             patch_shape=patch_shape,
             stride=tuple(args.inference_stride),
