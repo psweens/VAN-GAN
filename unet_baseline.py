@@ -32,6 +32,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import h5py
 import numpy as np
 import tensorflow as tf
+import tensorflow_addons as tfa
 from scipy.signal.windows import tukey
 
 ds_opts = tf.data.Options()
@@ -326,6 +327,7 @@ def _build_tf_dataset(
         img.set_shape(patch_shape + (1,))
         lbl.set_shape(patch_shape + (1,))
         img = min_max_norm_tf(img, axis=None)
+        lbl = min_max_norm_tf(lbl, axis=None)
         #img = rescale_arr_tf(img, alpha=-0.5, beta=0.5)
         return img, lbl
 
@@ -497,10 +499,10 @@ def prepare_datasets(
 
 def conv_block(x, filters: int, *, kernel_size: int = 3, dropout: float = 0.0) -> tf.Tensor:
     x = tf.keras.layers.Conv3D(filters, kernel_size, padding="same")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
+    x = tfa.layers.InstanceNormalization()(x)
     x = tf.keras.layers.Activation("relu")(x)
     x = tf.keras.layers.Conv3D(filters, kernel_size, padding="same")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
+    x = tfa.layers.InstanceNormalization()(x)
     x = tf.keras.layers.Activation("relu")(x)
     if dropout > 0:
         x = tf.keras.layers.Dropout(dropout)(x)
@@ -528,7 +530,7 @@ def build_unet(
 
     for d in reversed(range(depth)):
         filters = base_filters * (2 ** d)
-        x = tf.keras.layers.Conv3DTranspose(filters, 2, strides=2, padding="same")(x)
+        x = tf.keras.layers.UpSampling3D(size=2)(x)
         x = tf.keras.layers.Concatenate()([x, skips[d]])
         x = conv_block(x, filters, dropout=dropout if d > 0 else 0.0)
 
@@ -545,9 +547,8 @@ def dice_coefficient(y_true: tf.Tensor, y_pred: tf.Tensor, epsilon: float = 1e-5
     return tf.reduce_mean(dice)
 
 from cbDice_func import soft_dice_cbdice_loss
-def dice_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-    obj_func = soft_dice_cbdice_loss()
-    return 1. - obj_func(y_true, y_pred)
+def dice_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> float:
+    return 1. - dice_coefficient(y_true, y_pred)
 
 
 # ---------------------------------------------------------------------------
@@ -826,9 +827,11 @@ def run_inference_on_split(
             if labels.ndim == 3:
                 labels = labels[..., np.newaxis]
             lbl_mask = labels[..., 0].astype(np.float32)
-            dice = (2 * np.sum(pred_mask * lbl_mask) + 1e-5) / (
-                np.sum(pred_mask) + np.sum(lbl_mask) + 1e-5
-            )
+            dice = dice_coefficient(pred_mask, lbl_mask)
+            metrics.append({
+                "volume": img_path.name,
+                "dice": float(dice),
+            })
             metrics.append({
                 "volume": img_path.name,
                 "dice": float(dice),
@@ -874,19 +877,10 @@ def parse_args() -> argparse.Namespace:
         default="test",
         help="Sub-folder name for test volumes",
     )
-    parser.add_argument("--output-dir", default="./unet_baseline_output", help="Directory to store weights and predictions")
-    parser.add_argument("--patch-size", nargs=3, type=int, default=(64, 64, 64), help="Training patch size (HxWxD)")
-    parser.add_argument("--inference-stride", nargs=3, type=int, default=(32, 32, 32), help="Sliding window stride (HxWxD)")
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--base-filters", type=int, default=32)
-    parser.add_argument("--depth", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument(
         "--monitor-period",
         type=int,
-        default=1,
+        default=5,
         help="Number of epochs between intra-training visual summaries",
     )
     parser.add_argument(
@@ -895,11 +889,20 @@ def parse_args() -> argparse.Namespace:
         default=2,
         help="Validation volumes visualised by the intra-training monitor",
     )
+    parser.add_argument("--output-dir", default="/mnt/sda/UNet_PA/", help="Directory to store weights and predictions")
+    parser.add_argument("--patch-size", nargs=3, type=int, default=(128, 128, 128), help="Training patch size (HxWxD)")
+    parser.add_argument("--inference-stride", nargs=3, type=int, default=(64, 64, 64), help="Sliding window stride (HxWxD)")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--base-filters", type=int, default=32)
+    parser.add_argument("--depth", type=int, default=4)
+    parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--inference-batch-size", type=int, default=4, help="Number of patches evaluated at once during inference")
     parser.add_argument("--window-type", choices=["tukey", "hann", "gaussian"], default="tukey")
     parser.add_argument("--window-kwargs", default="", help="JSON encoded keyword arguments for the window function")
     parser.add_argument("--threshold", type=float, default=0.5, help="Binarisation threshold for predictions")
-    parser.add_argument("--save-predictions", action="store_true", help="Persist predicted masks as HDF5 volumes")
+    parser.add_argument("--save-predictions", default="True", help="Persist predicted masks as HDF5 volumes")
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of volumes reserved for validation when splitting flat directories")
     parser.add_argument("--test-fraction", type=float, default=0.1, help="Fraction of volumes reserved for testing when splitting flat directories")
     parser.add_argument("--split-seed", type=int, default=1337, help="Random seed for automatic train/val/test partitioning")
