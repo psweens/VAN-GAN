@@ -653,7 +653,8 @@ class IntraEpochPerformanceMonitor(tf.keras.callbacks.Callback):
         figure_path = self.output_dir / f"{sample_name}_epoch_{epoch_step:03d}.png"
         fig.savefig(figure_path)
         print(f"[Monitor] Saved {figure_path}")
-        plt.close(fig)
+        plt.show()
+        #plt.close(fig)
 
     @staticmethod
     def _dice_score(pred: np.ndarray, target: np.ndarray, eps: float = 1e-5) -> float:
@@ -878,8 +879,8 @@ def run_inference_on_split(
             preprocess=lambda arr: _preprocess_numpy(arr).astype(np.float32),
         )
 
-        prob = prediction[..., 0]
-        pred_mask = (prob > args.threshold).astype(np.float32)
+        pred_mask = prediction[..., 0]
+        #pred_mask = (prob > args.threshold).astype(np.float32)
 
         if args.save_predictions:
             pred_path = predictions_root / f"{img_path.stem}_prediction.h5"
@@ -967,6 +968,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-kwargs", default="", help="JSON encoded keyword arguments for the window function")
     parser.add_argument("--threshold", type=float, default=0.5, help="Binarisation threshold for predictions")
     parser.add_argument("--save-predictions", default="True", help="Persist predicted masks as HDF5 volumes")
+    parser.add_argument(
+        "--load-checkpoint",
+        default="True",
+        help="Skip training and load the best checkpoint (unet_best.h5) from the output directory",
+    )
     parser.add_argument("--val-fraction", type=float, default=0.1, help="Fraction of volumes reserved for validation when splitting flat directories")
     parser.add_argument("--test-fraction", type=float, default=0.1, help="Fraction of volumes reserved for testing when splitting flat directories")
     parser.add_argument("--split-seed", type=int, default=1337, help="Random seed for automatic train/val/test partitioning")
@@ -989,7 +995,23 @@ def main():
     )
 
     patch_shape = tuple(args.patch_size)
-    model = train_unet(args, split_map, patch_shape)
+    if args.load_checkpoint:
+        checkpoint_path = Path(args.output_dir) / "unet_best.h5"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Checkpoint '{checkpoint_path}' not found. Run training first or verify the output directory."
+            )
+        strategy = configure_gpus()
+        with strategy.scope():
+            model = build_unet(
+                patch_shape + (1,),
+                base_filters=args.base_filters,
+                depth=args.depth,
+                dropout=args.dropout,
+            )
+            model.load_weights(str(checkpoint_path))
+    else:
+        model = train_unet(args, split_map, patch_shape)
 
     test_metrics = run_inference_on_split(
         model,
