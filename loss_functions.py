@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 from utils import min_max_norm_tf, z_score_norm_tf
 from clDice_func import soft_dice_cldice_loss
-from cbDice_func import soft_dice_cbdice_loss
+from cbDice_func import soft_dice_cbdice_loss, topo_boundary_loss
 
 
 # ------------------------------------------------------------------------------
@@ -323,6 +323,7 @@ def cycle_reconstruction(self, real_image, cycled_image):
     valid_axes = list(range(1, image_rank))
     norm_real = min_max_norm_tf(real_image, axis=valid_axes)
     norm_cycled = min_max_norm_tf(cycled_image, axis=valid_axes)
+    # ssim_val = ssim_loss(norm_real, norm_cycled, max_val=1.0)
     ssim_val = ms_ssim_loss(norm_real, norm_cycled, max_val=1.0)
     return reduce_mean(self, ssim_val, axis=list(range(1, len(real_image.shape)))) * self.lambda_reconstruction
 
@@ -336,10 +337,12 @@ def cycle_seg_loss(self, real_image, cycled_image, dist_thr=1.):
     valid_axes = list(range(1, image_rank))
     real = min_max_norm_tf(real_image, axis=valid_axes)
     cycled = min_max_norm_tf(cycled_image, axis=valid_axes)
-    cl_loss_obj = soft_dice_cldice_loss()
-    return cl_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
+    # cl_loss_obj = soft_dice_cldice_loss()
+    # return cl_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
     # cb_loss_obj = soft_dice_cbdice_loss()
     # return cb_loss_obj(real, cycled, dist_thr) * (self.lambda_topology / self.n_devices)
+    tb_loss_obj = topo_boundary_loss(alpha=0.2, dist_thr=self.cbdice_dist_thr)
+    return tb_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
 
 
 # ------------------------------------------------------------------------------
@@ -360,7 +363,18 @@ def identity_loss(self, real_image, same_image, typ=None, dist_thr=1.):
             loss_obj = soft_dice_cldice_loss()
             spat_loss = reduce_mean(self, loss_obj(real, same)) * self.lambda_seg_identity
             return spat_loss
-
+        elif typ == "cbdice":
+            real = min_max_norm_tf(real_image)
+            same = min_max_norm_tf(same_image)
+            loss_obj = soft_dice_cbdice_loss()
+            spat_loss = reduce_mean(self, loss_obj(real, same, dist_thr)) * self.lambda_seg_identity
+            return spat_loss
+        elif typ == "tb":
+            real = min_max_norm_tf(real_image)
+            same = min_max_norm_tf(same_image)
+            loss_obj = topo_boundary_loss(alpha=0.2, dist_thr=self.cbdice_dist_thr)
+            spat_loss = reduce_mean(self, loss_obj(real, same)) * self.lambda_seg_identity
+            return spat_loss
 
 # ------------------------------------------------------------------------------
 # Generator and Discriminator Losses

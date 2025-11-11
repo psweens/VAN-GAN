@@ -91,13 +91,13 @@ class GanMonitor:
     def tukey_window(self, shape, alpha=0.5):
         """Create a Tukey window for 2D or 3D data."""
         if len(shape) == 2:
-            w1 = scipy.signal.tukey(shape[0], alpha=alpha)
-            w2 = scipy.signal.tukey(shape[1], alpha=alpha)
+            w1 = scipy.signal.windows.tukey(shape[0], alpha=alpha)
+            w2 = scipy.signal.windows.tukey(shape[1], alpha=alpha)
             kernel = np.outer(w1, w2)
         elif len(shape) == 3:
-            w1 = scipy.signal.tukey(shape[0], alpha=alpha)
-            w2 = scipy.signal.tukey(shape[1], alpha=alpha)
-            w3 = scipy.signal.tukey(shape[2], alpha=alpha)
+            w1 = scipy.signal.windows.tukey(shape[0], alpha=alpha)
+            w2 = scipy.signal.windows.tukey(shape[1], alpha=alpha)
+            w3 = scipy.signal.windows.tukey(shape[2], alpha=alpha)
             kernel = np.outer(w1, w2).reshape(shape[0], shape[1], 1) * w3.reshape(1, 1, shape[2])
         else:
             raise ValueError("Unsupported shape length: expected 2 or 3 dimensions")

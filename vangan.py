@@ -45,27 +45,16 @@ class ReplayBuffer:
 def dist_thr_from_voxel_size(voxel_um: float,
                              min_diam_phys_um: float) -> tf.Tensor:
     """
-    Compute boundary-collar half-width in *voxels*.
-
-    Parameters
-    ----------
-    voxel_um       : edge length of an isotropic voxel, in millimetres
-    min_diam_phys  : smallest vessel diameter you want to resolve, mm
-                     (user input; e.g. 0.006 mm = 6 µm)
-
-    Returns
-    -------
-    tf.Tensor scalar (float32)  == DIST_THR in voxels
+    Half-width of the collar in voxels, just equal to the
+    minimum vessel *radius* in voxels.
     """
-    voxel_mm = voxel_um * 1.e-3
-    min_diam_phys = min_diam_phys_um * 1.e-3
-    # convert physical diameter to radius, then to voxels
-    r_min_vox = (min_diam_phys / 2) / voxel_mm
+    r_min_vox = 0.5 * (min_diam_phys_um / voxel_um)
+    dist_thr  = tf.cast(r_min_vox, tf.float32)
+    dist_thr = tf.maximum(tf.round(dist_thr), tf.cast(1., tf.float32))
+    tf.print('cbDice distance threshold set to', dist_thr, 'voxels')
+    return dist_thr
 
-    # choose half that radius as the collar width, but ≥ 1 voxel
-    dist_thr = max(1.0, 0.5 * r_min_vox)
-    print('cbDice distance threshold set to %.2f voxels' % dist_thr)
-    return tf.constant(dist_thr, tf.float32)
+
 
 class VanGan:
     def __init__(
@@ -282,7 +271,7 @@ class VanGan:
         reconstruction_loss = self.reconstruction_loss(self, real_I, cycled_I)
 
         # Get identity losses
-        seg_identity_loss = self.apply_seg_identity_loss(real_S, training, typ='cldice', dist_thr=self.cbdice_dist_thr)
+        seg_identity_loss = self.apply_seg_identity_loss(real_S, training, typ='tb', dist_thr=self.cbdice_dist_thr)
         imaging_identity_loss = self.apply_imaging_identity_loss(real_I, training)
 
         # Discriminator outputs using replay buffer outputs for fake images
