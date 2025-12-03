@@ -61,7 +61,7 @@ print(physical_devices)
 ''' SET PARAMETERS '''
 print('*** Setting VANGAN parameters ***')
 args = argparse.ArgumentParser()
-args.output_dir = '/mnt/sda/VG_Output'
+args.output_dir = '/mnt/sda/VGp_Paper/LS_Ablation/VG_Base/'
 args.N_DEVICES = len(physical_devices)
 args.BUFFER_SIZE = 256
 args.MIN_PIXEL_VALUE = -1.0
@@ -69,7 +69,7 @@ args.MAX_PIXEL_VALUE = 0.8
 
 # Training parameters
 args.EPOCHS = 250
-args.BATCH_SIZE = 1
+args.BATCH_SIZE = 4
 args.GLOBAL_BATCH_SIZE = args.N_DEVICES * args.BATCH_SIZE
 args.PREFETCH_SIZE = 1
 args.INITIAL_LR = 2e-4  # Learning rate
@@ -77,14 +77,14 @@ args.INITIATE_LR_DECAY = 200  #int(0.5 * args.EPOCHS)  # Set start of learning r
 args.NO_NOISE = 110# args.EPOCHS  # Set when discriminator noise decays to 0
 
 # Image parameters
-args.SURFACE_ILLUMINATION = True
+args.SURFACE_ILLUMINATION = False
 args.CHANNELS = 1
 args.DIMENSIONS = 3
 args.RAW_IMG_SIZE = (600, 600, 140, args.CHANNELS)  # Unprocessed imaging domain image dimensions
 args.TARG_RAW_IMG_SIZE = (600, 600, 140, args.CHANNELS)  # Target size if downsampling
 args.SYNTH_IMG_SIZE = (512, 512, 140)  # Unprocessed segmentation domain image dimensions
 args.TARG_SYNTH_IMG_SIZE = (512, 512, 140)  # Target size if downsampling
-args.SUBVOL_PATCH_SIZE = (128, 128, 128)  # Size of subvolume to be trained on
+args.SUBVOL_PATCH_SIZE = (64, 64, 64)  # Size of subvolume to be trained on
 # Set model input image size for training (based on above)
 if args.DIMENSIONS == 2:
     args.INPUT_IMG_SIZE = (
@@ -101,8 +101,8 @@ else:
         args.SUBVOL_PATCH_SIZE[2],
         1,
     )
-args.RESOLUTION = 20 # 20 um resolution
-args.MIN_VESSEL_DIAMETER = 20 # Minimum vessel diameter of imaged tissue
+args.RESOLUTION = 1 # 20 um resolution
+args.MIN_VESSEL_DIAMETER = 3 # Minimum vessel diameter of imaged tissue
 
 # Set callback parameters
 args.PERIOD_2D_CALLBACK = 2  # Period of epochs to output a 2D validation dataset example
@@ -133,11 +133,11 @@ synth_data = DataPreprocessor(args,
 #                       save_filtered=False)
 
 # Load dataset partitions
-imaging_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataA_partition.pkl')
+# imaging_data.load_partition('/mnt/sdb/3DcycleGAN_simLNet_LNet/dataA_partition.pkl')
 # imaging_data.load_partition('/mnt/sda/CH_training_dataset/dataA_partition.pkl')
 # synth_data.load_partition('/mnt/sda/CH_training_dataset/dataB_partition.pkl')
 # synth_data.partition['training'] = os.listdir('/mnt/sda/3DcycleGAN_simLNet_LNet/trainB')
-# imaging_data.load_partition('/mnt/sdb/LD_Lightsheet/VG/dataA_partition.pkl')
+imaging_data.load_partition('/mnt/sda/Light_Sheet_Dataset/dataA_partition.pkl', rebase_dir='/mnt/sda/Light_Sheet_Dataset/')
 # imaging_data.load_partition('/mnt/sda/VS-GAN_deepVess/dataA_partition.pkl')
 # imaging_data.load_partition('/mnt/sda/VAN-GAN_HREM/dataA_partition.pkl')
 # imaging_data.load_partition('/mnt/sdb/HIPCT/dataA_partition.pkl')
@@ -230,36 +230,36 @@ save_args(args, os.path.join(args.output_dir, 'Args_Settings.txt'))
 
 ''' TRAIN VAN-GAN MODEL '''
 # vangan_model.load_checkpoint(epoch=240, newpath='/mnt/sda/VGp_Paper/PA_Synth_Ablation_Study/Cycle_MS_SSIM_cldice_ID_cldice/checkpoints/')
-# vangan_model.load_checkpoint(epoch=150)
-for epoch in range(args.EPOCHS):
-    print(f'\nEpoch {epoch + 1:03d}/{args.EPOCHS:03d}')
-    vangan_model.current_epoch.assign(epoch + 1)
-    start = time()
-
-    # Set shared_cycle to True after epoch 100
-    if (epoch + 1) >= 100:
-        vangan_model.shared_cycle.assign(True)  # Assigning Boolean value
-
-    plotter.on_epoch_start(vangan_model, epoch, args)
-
-    'Training GAN for fixed no. of steps'
-    results = train(getDataset.train_dataset, vangan_model, summary, epoch, args.train_steps, 'Train')
-    summary.losses(results)
-
-    'Run GAN for validation dataset'
-    results = train(getDataset.val_dataset, vangan_model, summary, epoch, args.val_steps, 'Validate',
-                    training=False)
-
-    summary.losses(results)
-
-    if epoch % args.PERIOD_2D_CALLBACK == 1 or epoch == args.EPOCHS - 1:
-        plotter.on_epoch_end(vangan_model, epoch, args)
-        # if epoch > 100:
-        vangan_model.save_checkpoint(epoch=epoch)
-
-    end = time()
-    summary.scalar('elapse', end - start, epoch=epoch, training=True)
-
+# vangan_model.load_checkpoint(epoch=18)
+# for epoch in range(args.EPOCHS):
+#     print(f'\nEpoch {epoch + 1:03d}/{args.EPOCHS:03d}')
+#     vangan_model.current_epoch.assign(epoch + 1)
+#     start = time()
+#
+#     # Set shared_cycle to True after epoch 100
+#     if (epoch + 1) >= 100:
+#         vangan_model.shared_cycle.assign(True)  # Assigning Boolean value
+#
+#     plotter.on_epoch_start(vangan_model, epoch, args)
+#
+#     'Training GAN for fixed no. of steps'
+#     results = train(getDataset.train_dataset, vangan_model, summary, epoch, args.train_steps, 'Train')
+#     summary.losses(results)
+#
+#     'Run GAN for validation dataset'
+#     results = train(getDataset.val_dataset, vangan_model, summary, epoch, args.val_steps, 'Validate',
+#                     training=False)
+#
+#     summary.losses(results)
+#
+#     if epoch % args.PERIOD_2D_CALLBACK == 1 or epoch == args.EPOCHS - 1:
+#         plotter.on_epoch_end(vangan_model, epoch, args)
+#         # if epoch > 100:
+#         vangan_model.save_checkpoint(epoch=epoch)
+#
+#     end = time()
+#     summary.scalar('elapse', end - start, epoch=epoch, training=True)
+#
 
 ''' CREATE VANGAN PREDICTIONS '''
 # Predict segmentation probability maps for imaging test dataset
@@ -274,27 +274,27 @@ for epoch in range(args.EPOCHS):
 # Alternatively, to run VANGAN on a directory of images (saved as .npy) using the following example script
 # new_imaging_data = DataPreprocessor(args=args)  # Create data preprocessor
 # new_imaging_data.data_type = 'float32'
-# new_imaging_data.process_new_data(current_path='/mnt/sda/EVB/Phase 6 - AA RT_Isotropic/',
-#                                   new_path='/mnt/sda/EVB/Phase 6 - AA RT_Isotropic_VG_Preprocessed/',
-#                                   preprocess_fn=preprocess_rsom,
+# new_imaging_data.process_new_data(current_path='/mnt/sdb/3DcycleGAN_simLNet_LNet/raw_data/simLNet/',
+#                                   new_path='/mnt/sdb/3DcycleGAN_simLNet_LNet/all_data_A_filtered/',
+#                                   preprocess_fn=None,
 #                                   tiff_size=args.RAW_IMG_SIZE,
 #                                   target_size=args.TARG_RAW_IMG_SIZE,
 #                                   resize=False)
 
 # ''' TESTING PREDICTIONS ACROSS EPOCHS '''
-# epoch_sweep(args,
-#             vangan_model,
-#             plotter,
-#             test_path='/mnt/sdb/3DcycleGAN_simLNet_LNet/epoch_sweep/',  # Can use imaging_data.partition['testing']
-#             start=100,
-#             end=250,
-#             segmentation=True  # Set to False if fake imaging is wanted
-#             )
+epoch_sweep(args,
+            vangan_model,
+            plotter,
+            test_path='/mnt/sda/Light_Sheet_Dataset/Epoch_Sweep/',  # Can use imaging_data.partition['testing']
+            start=100,
+            end=250,
+            segmentation=True  # Set to False if fake imaging is wanted
+            )
 
 # vangan_model.load_checkpoint(epoch=250)
-filepath = '/mnt/sdb/3DcycleGAN_simLNet_LNet/all_data_A/'
-img_files = os.listdir(filepath)
-for file in range(len(img_files)):
-    img_files[file] = os.path.join(filepath, img_files[file])
-plotter.run_mapping(vangan_model, img_files, args.INPUT_IMG_SIZE, filetext='VANGAN_', filepath=args.output_dir,
-                    segmentation=True)
+# filepath = '/mnt/sdb/3DcycleGAN_simLNet_LNet/all_data_A/'
+# img_files = os.listdir(filepath)
+# for file in range(len(img_files)):
+#     img_files[file] = os.path.join(filepath, img_files[file])
+# plotter.run_mapping(vangan_model, img_files, args.INPUT_IMG_SIZE, filetext='VANGAN_', filepath=args.output_dir,
+#                     segmentation=True)

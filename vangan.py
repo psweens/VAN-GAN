@@ -54,7 +54,17 @@ def dist_thr_from_voxel_size(voxel_um: float,
     tf.print('cbDice distance threshold set to', dist_thr, 'voxels')
     return dist_thr
 
-
+def core_shrink_from_voxel_size(voxel_um: float,
+                                min_diam_phys_um: float) -> int:
+    """
+    Erosion depth (in voxels) applied before skeletonising the GT core.
+    Chooses a radius one voxel smaller than the rounded minimum vessel radius
+    to maintain topology tolerance across resolutions.
+    """
+    r_min_vox = 0.5 * (min_diam_phys_um / voxel_um)
+    erosion_depth = max(0, int(round(r_min_vox) - 1))
+    tf.print('cbDice erosion depth set to', erosion_depth, 'voxels')
+    return erosion_depth
 
 class VanGan:
     def __init__(
@@ -114,6 +124,8 @@ class VanGan:
         self.resolution = args.RESOLUTION
         self.min_vessel_diameter = args.MIN_VESSEL_DIAMETER
         self.cbdice_dist_thr = dist_thr_from_voxel_size(voxel_um=self.resolution, min_diam_phys_um=self.min_vessel_diameter)
+        self.core_shrink = core_shrink_from_voxel_size(voxel_um=self.resolution,
+                                                       min_diam_phys_um=self.min_vessel_diameter)
 
         # Create checkpoint directory
         self.checkpoint_dir = os.path.join(args.output_dir, 'checkpoints')

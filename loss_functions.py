@@ -341,7 +341,9 @@ def cycle_seg_loss(self, real_image, cycled_image, dist_thr=1.):
     # return cl_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
     # cb_loss_obj = soft_dice_cbdice_loss()
     # return cb_loss_obj(real, cycled, dist_thr) * (self.lambda_topology / self.n_devices)
-    tb_loss_obj = topo_boundary_loss(alpha=0.2, dist_thr=self.cbdice_dist_thr)
+    tb_loss_obj = topo_boundary_loss(alpha=0.5,
+                                     dist_thr=self.cbdice_dist_thr,
+                                     core_shrink=self.core_shrink)
     return tb_loss_obj(real, cycled) * (self.lambda_topology / self.n_devices)
 
 
@@ -372,7 +374,9 @@ def identity_loss(self, real_image, same_image, typ=None, dist_thr=1.):
         elif typ == "tb":
             real = min_max_norm_tf(real_image)
             same = min_max_norm_tf(same_image)
-            loss_obj = topo_boundary_loss(alpha=0.2, dist_thr=self.cbdice_dist_thr)
+            loss_obj = topo_boundary_loss(alpha=0.5,
+                                          dist_thr=self.cbdice_dist_thr,
+                                          core_shrink=self.core_shrink)
             spat_loss = reduce_mean(self, loss_obj(real, same)) * self.lambda_seg_identity
             return spat_loss
 

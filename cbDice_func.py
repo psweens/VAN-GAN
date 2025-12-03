@@ -168,11 +168,11 @@ def _Ts_gt_core_skeleton_recall(y_true, y_pred, core_shrink=CORE_SHRINK):
     y_l = _prep_true(y_true)      # binary GT
     y_p = _prep_pred(y_pred)      # soft prediction
 
-
-    if core_shrink > 0:
-        y_core = _erode_binary_steps(y_l, core_shrink)
-    else:
-        y_core = y_l
+    core_shrink = tf.cast(core_shrink, tf.int32)
+    y_core = tf.cond(
+        core_shrink > 0,
+        lambda: _erode_binary_steps(y_l, core_shrink),
+        lambda: y_l)
 
 
     S_core = _soft_skel(y_core)   # skeleton of eroded GT
@@ -185,11 +185,12 @@ def _Ts_gt_core_skeleton_recall(y_true, y_pred, core_shrink=CORE_SHRINK):
 
 
 @tf.function
-def cbdice_loss(y_true, y_pred, dist_thr=DIST_THR, beta=BETA):
+def cbdice_loss(y_true, y_pred, dist_thr=DIST_THR, beta=BETA, core_shrink=CORE_SHRINK):
     """
     y_true, y_pred: (B,Z,Y,X,1) or (B,H,W,1) or multi-class logits.
     dist_thr: boundary half-width (voxels). We'll round and clamp to ≥2.
     beta: F_beta emphasis on boundary term (beta>1 favours Tb).
+    core_shrink: erosion depth (voxels) applied to the GT before skeletonisation.
     """
     # symmetric boundary Dice restricted to a k-voxel collar
     k_band = tf.maximum(tf.cast(1, tf.int32), tf.cast(tf.round(dist_thr), tf.int32))
@@ -197,7 +198,7 @@ def cbdice_loss(y_true, y_pred, dist_thr=DIST_THR, beta=BETA):
 
 
     # topology term: core GT skeleton recall inside prediction
-    Ts = _Ts_gt_core_skeleton_recall(y_true, y_pred, CORE_SHRINK)
+    Ts = _Ts_gt_core_skeleton_recall(y_true, y_pred, core_shrink)
 
 
     # F_beta-style harmonic mean
@@ -208,31 +209,61 @@ def cbdice_loss(y_true, y_pred, dist_thr=DIST_THR, beta=BETA):
     return tf.reduce_mean(1.0 - cb)
 
 
-def soft_dice_cbdice_loss(alpha=0.1, beta=BETA):
+def soft_dice_cbdice_loss(alpha=0.1, beta=BETA, core_shrink=CORE_SHRINK):
     """
     Combined Dice + cbDice loss.  alpha weights the cbDice term.
+    `core_shrink` controls the erosion depth before GT skeletonisation;
+    pass `core_shrink_override` at call-time to override it dynamically.
     """
-    def loss(y_true, y_pred, dist_thr=DIST_THR):
+    def loss(y_true, y_pred, dist_thr=DIST_THR, core_shrink_override=None):
+        shrink = core_shrink if core_shrink_override is None else core_shrink_override
         dice = soft_dice(y_true, y_pred)                    # 1 – Dice coeff
-        cb   = cbdice_loss(y_true, y_pred, dist_thr, beta)  # this IS a loss
+        cb   = cbdice_loss(y_true, y_pred, dist_thr, beta, shrink)  #
         return (1.0 - alpha)*dice + alpha*cb
     return loss
 
 def topo_boundary_loss(alpha: float,
-                      dist_thr: float,
-                      beta: float = BETA):
+                       dist_thr: float,
+                       beta: float = BETA,
+                       core_shrink: int = CORE_SHRINK):
 
-    def loss(y_true, y_pred):
-        dice_l = soft_dice(y_true, y_pred)              # 1 - Dice
-        cl_l   = soft_clDice_loss(y_true, y_pred)             # 1 - clDice
-        cb_l   = cbdice_loss(y_true, y_pred,
-                             dist_thr=dist_thr,
-                             beta=beta)                 # 1 - cbDice
+    alpha = float(alpha)
 
-        topo_l = (1.0 - alpha) * cl_l + alpha * cb_l
-        return 0.5 * (dice_l + topo_l)
+    if alpha == 0.0:
+        # Only clDice is ever used
+        def loss(y_true, y_pred):
+            dice_l = soft_dice(y_true, y_pred)  # 1 - Dice
+            topo_l = soft_clDice_loss(y_true, y_pred)  # 1 - clDice
+            return 0.5 * (dice_l + topo_l)
+
+    elif alpha == 1.0:
+        # Only cbDice is ever used
+        def loss(y_true, y_pred):
+            dice_l = soft_dice(y_true, y_pred)  # 1 - Dice
+            topo_l = cbdice_loss(
+                y_true, y_pred,
+                dist_thr=dist_thr,
+                beta=beta,
+                core_shrink=core_shrink
+            )  # 1 - cbDice
+            return 0.5 * (dice_l + topo_l)
+
+    else:
+        # General case: need both
+        def loss(y_true, y_pred):
+            dice_l = soft_dice(y_true, y_pred)  # 1 - Dice
+            cl_l = soft_clDice_loss(y_true, y_pred)  # 1 - clDice
+            cb_l = cbdice_loss(
+                y_true, y_pred,
+                dist_thr=dist_thr,
+                beta=beta,
+                core_shrink=core_shrink
+            )  # 1 - cbDice
+            topo_l = (1.0 - alpha) * cl_l + alpha * cb_l
+            return 0.5 * (dice_l + topo_l)
 
     return loss
+
 
 
 

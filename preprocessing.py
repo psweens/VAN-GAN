@@ -241,9 +241,71 @@ class DataPreprocessor:
                 )
 
     # ───────────────────────── util: load existing partition ───────
-    def load_partition(self, file_path):
+    def load_partition(self, file_path, rebase_dir=None, original_root=None):
+        """
+        Load a serialized partition mapping from disk.
+
+        Args:
+            file_path: Path to the pickled partition file.
+            rebase_dir: Optional directory that will replace the old base path of
+                every stored file. Useful when the dataset has been moved to a
+                new location without regenerating the partition file.
+            original_root: The directory to replace. If omitted, the common
+                prefix of all stored paths is used.
+        """
         print(f"*** Loading dataset {self.partition_id} partition ***")
         self.partition = load_dict(file_path)
+
+        if rebase_dir:
+            self.rebase_partition_paths(rebase_dir, old_root=original_root)
+
+    def rebase_partition_paths(self, new_root, old_root = None):
+        """
+        Update every path in ``self.partition`` to point to ``new_root``.
+
+        Args:
+            new_root: Base directory that should replace the previous root.
+            old_root: The directory to strip from existing paths before joining
+                with ``new_root``. If not provided, the common prefix across all
+                paths is used.
+        """
+
+        if not self.partition:
+            raise ValueError("Partition must be loaded before rebasing paths.")
+
+        all_paths = [p for arr in self.partition.values() for p in arr.tolist()]
+        if not all_paths:
+            return
+
+        source_root = old_root or os.path.commonpath(all_paths)
+        if not source_root:
+            raise ValueError("Unable to determine original root for partition paths.")
+
+        def _rebase(path, *, split_key: str):
+            """Join ``new_root`` with the path segment that starts at the split folder."""
+
+            # expected split folder names (e.g., training → trainA, validation → valA)
+            split_dir = {
+                "training": "train",
+                "validation": "val",
+                "testing": "test",
+            }.get(split_key, split_key)
+            split_dir = f"{split_dir}{self.partition_id}"
+
+            parts = path.split(os.sep)
+            if split_dir in parts:
+                idx = parts.index(split_dir)
+                rel_path = os.path.join(*parts[idx:])
+            else:
+                # fall back to the common root to avoid dropping path components
+                rel_path = os.path.relpath(path, source_root)
+
+            return os.path.normpath(os.path.join(new_root, rel_path))
+
+        self.partition = {
+            split: np.array([_rebase(p, split_key=split) for p in paths], dtype=object)
+            for split, paths in self.partition.items()
+        }
 
     # ───────────────────────── util: process unseen data ───────────
     def process_new_data(
