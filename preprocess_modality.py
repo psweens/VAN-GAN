@@ -87,45 +87,68 @@ def preprocess_hrem(img):
 
 from skimage.measure import block_reduce
 # Light-sheet microscopy
-def preprocess_lsm(img):
+import numpy as np
+from scipy.ndimage import median_filter, gaussian_filter
+
+def preprocess_lsfm(
+    img,
+    median_size=3,
+    bg_sigma=32,
+    p_low=1.0,
+    p_high=99.5,
+    gamma=0.7,
+    local_norm=False,
+    local_sigma=16,
+    eps=1e-8,
+    as_tanh=False,
+):
     """
-    Preprocesses a 3D image array using slice-wise Z-score normalization and clipping of upper and lower percentiles.
-
-    Args:
-    - img (np.ndarray): A 3D numpy array representing the image to be preprocessed.
-    - lower_thresh (float): The lower percentile value to clip the image at (default: 0.05).
-    - upper_thresh (float): The upper percentile value to clip the image at (default: 99.95).
-
-    Returns:
-    - np.ndarray: The preprocessed 3D numpy array.
+    LSFM preprocessing for 3D vascular data.
+    Works per volume; you can also apply it per patch if needed.
     """
 
-    # 3D median filter
-    img = min_max_norm(img)
-    img = median_filter(img, size=3)
-    img = np.sqrt(img)
-    # img = z_score_norm(img)
-    # up = sp.scoreatpercentile(img, 99.95)
-    # img[img > up] = up
+    img = img.astype(np.float32)
 
-    # Clipping of upper and lower percentiles
-    # Iterate over each slice along the z-axis
-    # for z in range(img.shape[2]):
-    #     # Select the slice at position z
-    #     image = img[:, :, z]
-    #
-    #     # Calculate the lower and upper percentiles for the current slice
-    #     up = sp.scoreatpercentile(image, 99)
-    #
-    #     # Apply clipping to the current slice
-    #     image[image > up] = up
-    #
-    #     # Update the slice in the original image
-    #     img[:, :, z] = image
+    # 1. Light denoising (optional, keep small)
+    if median_size is not None and median_size > 1:
+        img = median_filter(img, size=median_size)
 
-    # img = zoom(img, zoom=[1, 1, 5], order=3)
-    # img = block_reduce(img, (1, 1, 2))
-    img = min_max_norm(img)
+    # 2. Background / shading correction (orientation-agnostic)
+    if bg_sigma is not None and bg_sigma > 0:
+        bg = gaussian_filter(img, sigma=bg_sigma)
+        img = img - bg
+        img[img < 0] = 0
+
+    # 3. Robust percentile clipping (per volume)
+    lo, hi = np.percentile(img, [p_low, p_high])
+    if hi <= lo:
+        # degenerate case; just return zeros
+        img[:] = 0
+        return img
+
+    img = np.clip(img, lo, hi)
+
+    # 4. Scale globally to [0,1]
+    img = (img - lo) / (hi - lo + eps)
+
+    # 5. Optional local 3D normalisation to tame broad bands / stripes
+    if local_norm:
+        mu = gaussian_filter(img, sigma=local_sigma)
+        var = gaussian_filter((img - mu) ** 2, sigma=local_sigma)
+        img = (img - mu) / (np.sqrt(var) + eps)
+        # clip to avoid huge tails from pure noise
+        img = np.clip(img, -3.0, 3.0)
+        # rescale to [0,1]
+        img = (img + 3.0) / 6.0
+
+    # 6. Gentle gamma to emphasise small vessels
+    if gamma is not None:
+        img = np.clip(img, 0.0, 1.0)  # in case of numerical drift
+        img = img ** gamma
+
+    # 7. Final scaling for the network
+    if as_tanh:
+        img = img * 2.0 - 1.0  # [0,1] -> [-1,1]
 
     return img
 

@@ -4,6 +4,7 @@ import numpy as np
 import tensorflow as tf
 import skimage.io as sk
 from skimage import exposure
+from scipy.ndimage import zoom, gaussian_filter
 from scipy import stats
 #import tf_clahe
 #import mclahe as mc
@@ -253,39 +254,54 @@ def load_volume(file, datatype='uint8', normalise=True):
         vol = min_max_norm(vol)
     return vol
 
-
-def resize_volume(img, target_size=None):
+def resize_volume(img: np.ndarray,
+                  target_size,
+                  order: int = 3,
+                  anti_aliasing: bool = True) -> np.ndarray:
     """
-    Resize a 3D volume to a target size.
-    
-    Args:
-    img (numpy.ndarray): A 3D volume represented as a numpy array.
-    target_size (tuple): A tuple of three integers representing the target size of the volume.
-    
-    Returns:
-    numpy.ndarray: The resized 3D volume.
+    Resize a 3D greyscale volume to a target size using 3D interpolation.
+
+    Parameters
+    ----------
+    img : np.ndarray
+        3D array with shape (Z, Y, X).
+    target_size : tuple[int, int, int]
+        Desired output shape (Z_new, Y_new, X_new).
+    order : int, optional
+        Spline interpolation order: 0=nearest, 1=linear, 3=cubic (default).
+    anti_aliasing : bool, optional
+        If True, applies Gaussian smoothing before *downsampling* to reduce aliasing.
+
+    Returns
+    -------
+    np.ndarray
+        Resampled volume with shape `target_size`, dtype float32.
     """
+    img = np.asarray(img, dtype=np.float32)
+    src = np.array(img.shape, dtype=np.float32)
+    tgt = np.array(target_size, dtype=np.float32)
 
-    # Create two arrays to hold intermediate and final results
-    arr1 = np.empty([target_size[0], target_size[1], img.shape[2]], dtype='float32')
-    arr2 = np.empty([target_size[0], target_size[1], target_size[2]], dtype='float32')
+    if src.shape[0] != 3:
+        raise ValueError(f"Expected 3D volume, got shape {img.shape}")
 
-    # If the input volume's width and height don't match the target size, resize each slice along the z-axis
-    if not img.shape[0:2] == target_size[0:2]:
-        for i in range(img.shape[2]):
-            arr1[:, :, i] = cv2.resize(img[:, :, i], (target_size[0], target_size[1]),
-                                       interpolation=cv2.INTER_LANCZOS4)
+    zoom_factors = tgt / src  # <1: downsample, >1: upsample
 
-        for i in range(target_size[0]):
-            arr2[i, :, :] = cv2.resize(arr1[i,], (target_size[2], target_size[1]),
-                                       interpolation=cv2.INTER_LANCZOS4)
+    # Anti-aliasing only where we downsample
+    if anti_aliasing:
+        # sigma is in input voxels; heuristic based on amount of downsampling
+        downsample_axes = zoom_factors < 1
+        if np.any(downsample_axes):
+            sigma = np.zeros(3, dtype=np.float32)
+            sigma[downsample_axes] = 0.5 * (1.0 / zoom_factors[downsample_axes] - 1.0)
+            img = gaussian_filter(img, sigma=sigma, mode="nearest")
 
-    else:  # If the input volume's width and height match the target size, resize each slice along the x-axis
-        for i in range(target_size[0]):
-            arr2[i, :, :] = cv2.resize(img[i,], (target_size[2], target_size[1]),
-                                       interpolation=cv2.INTER_LANCZOS4)
+    # prefilter=True only needed for order >= 2, but harmless otherwise
+    out = zoom(img,
+               zoom=zoom_factors,
+               order=order,
+               prefilter=(order >= 2))
 
-    return arr2
+    return out.astype(np.float32, copy=False)
 
 
 # def get_vacuum(arr, dim=3):
