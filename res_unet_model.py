@@ -72,17 +72,30 @@ class ResUNet(Model):
             x = GaussianNoise(0.2)(x)
 
         x = self.stem(x, f[0], dim=self.dim)
-        skip_layers.append(x)
+        stem_out = x
+
+        hi = self.residual_block(stem_out,
+                                 filters=f[0],
+                                 strides=1,
+                                 kernel_initializer=self.kernel_initializer,
+                                 dropout_type=self.dropout_type,
+                                 dropout=self.dropout,
+                                 dim=self.dim)
+        hi_channels = max(4, f[0] // 4)
+        hi = self.Conv(filters=hi_channels,
+                       kernel_size=1,
+                       padding="same",
+                       kernel_initializer=self.kernel_initializer)(hi)
 
         # Encoder
         for e in range(1, self.num_layers + 1):
+            skip_layers.append(x)
             x = self.residual_block(x,
                                     filters=f[e],
                                     strides=2,
                                     kernel_initializer=self.kernel_initializer,
                                     dropout_type=self.dropout_type,
                                     dropout=self.dropout + (e - 1) * self.dropout_change_per_layer, dim=self.dim)
-            skip_layers.append(x)
 
         # Bridge
         x = self.conv_block(x, filters=f[-1], strides=1)
@@ -92,6 +105,22 @@ class ResUNet(Model):
         for d in reversed(range(self.num_layers)):
             x = self.upsample_concat_block(x, skip_layers[d], filters=f[d + 1])
             x = self.residual_block(x, filters=f[d])
+
+        if hi_channels == f[0]:
+            x = self.Conv(filters=hi_channels,
+                          kernel_size=1,
+                          padding="same",
+                          kernel_initializer=self.kernel_initializer)(x)
+            x = Add()([x, hi])
+        else:
+            x = concatenate([x, hi])
+            x = self.residual_block(x,
+                                    filters=f[0],
+                                    strides=1,
+                                    kernel_initializer=self.kernel_initializer,
+                                    dropout_type=self.dropout_type,
+                                    dropout=self.dropout,
+                                    dim=self.dim)
 
         # Output Layer
         x = self.final_layer(x)
